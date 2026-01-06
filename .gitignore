@@ -8,8 +8,6 @@ build/bin/
 *.dylib
 
 # Wails
-build/appicon.png
-build/windows/icon.ico
 build/windows/installer/project.nsi
 build/darwin/PacketReaper.app
 
