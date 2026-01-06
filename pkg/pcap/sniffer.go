@@ -34,7 +34,7 @@ func OpenFile(filename string) (*Sniffer, error) {
 		file.Close()
 		return nil, fmt.Errorf("error reading file magic: %w", err)
 	}
-	
+
 	// Reset file pointer to beginning
 	_, err = file.Seek(0, 0)
 	if err != nil {
@@ -46,20 +46,20 @@ func OpenFile(filename string) (*Sniffer, error) {
 	isPcapng := (magic[0] == 0x0a && magic[1] == 0x0d && magic[2] == 0x0d && magic[3] == 0x0a)
 
 	var packetSource *gopacket.PacketSource
-	
+
 	if isPcapng {
 		// Use NgReader for pcapng files with multi-interface support
 		options := pcapgo.NgReaderOptions{
 			WantMixedLinkType:          true,  // Enable reading from multiple interfaces
 			ErrorOnMismatchingLinkType: false, // Don't error on different link types
 		}
-		
+
 		ngReader, err := pcapgo.NewNgReader(file, options)
 		if err != nil {
 			file.Close()
 			return nil, fmt.Errorf("error creating pcapng reader: %w", err)
 		}
-		
+
 		// Store the NgReader so Sniff() can use custom decoding logic
 		return &Sniffer{
 			file:         file,
@@ -99,7 +99,7 @@ func (s *Sniffer) Sniff(handler PacketHandler) error {
 		// Custom decoding for pcapng with multiple interfaces/link types
 		return s.sniffNg(handler)
 	}
-	
+
 	// Standard packet source for regular pcap files
 	count := 0
 	for {
@@ -132,7 +132,7 @@ func (s *Sniffer) sniffNg(handler PacketHandler) error {
 			}
 			return fmt.Errorf("error reading packet %d: %v", count, err)
 		}
-		
+
 		// Get link type from ancillary data (set when WantMixedLinkType is true)
 		linkType := s.reader.LinkType()
 		if len(ci.AncillaryData) > 0 {
@@ -141,17 +141,17 @@ func (s *Sniffer) sniffNg(handler PacketHandler) error {
 				linkType = lt
 			}
 		}
-		
+
 		// Manually decode packet with correct link type
 		packet := gopacket.NewPacket(data, linkType, gopacket.DecodeOptions{
 			Lazy:   false,
 			NoCopy: true,
 		})
-		
+
 		// Set metadata
 		packet.Metadata().Timestamp = ci.Timestamp
 		packet.Metadata().CaptureInfo = ci
-		
+
 		count++
 		handler(packet)
 	}

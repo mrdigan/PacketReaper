@@ -16,11 +16,11 @@ const (
 
 // Detection thresholds
 const (
-	DGAEntropyThreshold  = 3.5     // Shannon entropy for DGA detection
-	ICMPMaxNormalSize    = 84      // bytes (typical ping)
-	DNSTxtMaxNormalSize  = 255     // bytes
+	DGAEntropyThreshold  = 3.5              // Shannon entropy for DGA detection
+	ICMPMaxNormalSize    = 84               // bytes (typical ping)
+	DNSTxtMaxNormalSize  = 255              // bytes
 	HighTrafficThreshold = 10 * 1024 * 1024 // 10MB per IP
-	LargePacketThreshold = 1500    // MTU size
+	LargePacketThreshold = 1500             // MTU size
 )
 
 // Standard port mappings

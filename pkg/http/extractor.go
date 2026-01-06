@@ -10,18 +10,18 @@ import (
 
 // Transaction represents an HTTP request/response transaction
 type Transaction struct {
-	Timestamp   string `json:"timestamp"`
-	FrameNum    int    `json:"frame_num"`
-	SrcIP       string `json:"src_ip"`
-	SrcPort     int    `json:"src_port"`
-	DstIP       string `json:"dst_ip"`
-	DstPort     int    `json:"dst_port"`
-	Method      string `json:"method"`
-	URL         string `json:"url"` // Full URL
-	Host        string `json:"host"`
-	UserAgent   string `json:"user_agent"`
-	Referer     string `json:"referer"`
-	Cookie      string `json:"cookie"` // Truncated/summarized
+	Timestamp string `json:"timestamp"`
+	FrameNum  int    `json:"frame_num"`
+	SrcIP     string `json:"src_ip"`
+	SrcPort   int    `json:"src_port"`
+	DstIP     string `json:"dst_ip"`
+	DstPort   int    `json:"dst_port"`
+	Method    string `json:"method"`
+	URL       string `json:"url"` // Full URL
+	Host      string `json:"host"`
+	UserAgent string `json:"user_agent"`
+	Referer   string `json:"referer"`
+	Cookie    string `json:"cookie"` // Truncated/summarized
 }
 
 // Extractor scans packets for HTTP transactions
@@ -53,14 +53,14 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet, frameNum int) {
 	}
 
 	payload := string(tcp.Payload)
-	
+
 	// Quick check for HTTP methods to identify requests
 	// We primarily care about requests for the "Browsing History" view
-	if !strings.HasPrefix(payload, "GET ") && 
-	   !strings.HasPrefix(payload, "POST ") && 
-	   !strings.HasPrefix(payload, "PUT ") && 
-	   !strings.HasPrefix(payload, "HEAD ") &&
-	   !strings.HasPrefix(payload, "DELETE ") {
+	if !strings.HasPrefix(payload, "GET ") &&
+		!strings.HasPrefix(payload, "POST ") &&
+		!strings.HasPrefix(payload, "PUT ") &&
+		!strings.HasPrefix(payload, "HEAD ") &&
+		!strings.HasPrefix(payload, "DELETE ") {
 		return
 	}
 
@@ -81,7 +81,7 @@ func (e *Extractor) extractTransaction(payload string, packet gopacket.Packet, f
 
 	method := parts[0]
 	rawURI := parts[1]
-	
+
 	tx := Transaction{
 		Timestamp: packet.Metadata().Timestamp.Format("15:04:05.000"),
 		FrameNum:  frameNum,
@@ -99,7 +99,7 @@ func (e *Extractor) extractTransaction(payload string, packet gopacket.Packet, f
 		if line == "" {
 			break
 		}
-		
+
 		if strings.Contains(line, ":") {
 			parts := strings.SplitN(line, ":", 2)
 			key := strings.ToLower(strings.TrimSpace(parts[0]))

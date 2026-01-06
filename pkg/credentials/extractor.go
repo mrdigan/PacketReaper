@@ -10,12 +10,12 @@ import (
 
 // Credential represents a discovered username/password pair
 type Credential struct {
-	Protocol  string `json:"protocol"`
-	ClientIP  string `json:"client_ip"`
-	ServerIP  string `json:"server_ip"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	Captured  bool   `json:"captured"` // captured in this file
+	Protocol string `json:"protocol"`
+	ClientIP string `json:"client_ip"`
+	ServerIP string `json:"server_ip"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Captured bool   `json:"captured"` // captured in this file
 }
 
 // Extractor handles credential extraction
@@ -33,7 +33,7 @@ func NewExtractor() *Extractor {
 func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	tcpLayer := packet.Layer(layers.LayerTypeTCP)
-	
+
 	if ipLayer == nil || tcpLayer == nil {
 		return
 	}
@@ -41,7 +41,7 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	ip, _ := ipLayer.(*layers.IPv4)
 	tcp, _ := tcpLayer.(*layers.TCP)
 	payload := string(tcp.Payload)
-	
+
 	if len(payload) == 0 {
 		return
 	}

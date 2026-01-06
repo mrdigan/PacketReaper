@@ -22,10 +22,10 @@ type Message struct {
 	Subject     string       `json:"subject"`
 	Date        string       `json:"date"`
 	MessageID   string       `json:"message_id"`
-	Body        string       `json:"body"`      // Decoded body
-	RawBody     string       `json:"raw_body"`  // Encoded body
-	Encoding    string       `json:"encoding"`  // "base64", "quoted-printable", "7bit", "8bit"
-	Size        int          `json:"size"`      // Body size in bytes
+	Body        string       `json:"body"`     // Decoded body
+	RawBody     string       `json:"raw_body"` // Encoded body
+	Encoding    string       `json:"encoding"` // "base64", "quoted-printable", "7bit", "8bit"
+	Size        int          `json:"size"`     // Body size in bytes
 	Attachments []Attachment `json:"attachments"`
 }
 
@@ -38,8 +38,8 @@ type Attachment struct {
 
 // Extractor scans packets for email messages
 type Extractor struct {
-	mu            sync.Mutex
-	Messages      []Message
+	mu             sync.Mutex
+	Messages       []Message
 	assemblyBuffer map[string]*messageBuilder // Key: srcIP:srcPort->dstIP:dstPort
 }
 
@@ -57,7 +57,7 @@ type messageBuilder struct {
 
 func NewExtractor() *Extractor {
 	return &Extractor{
-		Messages:      []Message{},
+		Messages:       []Message{},
 		assemblyBuffer: make(map[string]*messageBuilder),
 	}
 }
@@ -138,7 +138,7 @@ func (e *Extractor) parseSMTP(payload string, frameNum int, timestamp, srcIP str
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		
+
 		// Headers
 		if !inBody {
 			if strings.HasPrefix(line, "From:") {

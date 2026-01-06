@@ -1,17 +1,17 @@
 package analysis
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sort"
 	"sync"
 	"time"
-	"encoding/binary"
 
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
+	"PacketReaper/pkg/decryption"
 	"PacketReaper/pkg/geoip"
 	"PacketReaper/pkg/ja3"
-	"PacketReaper/pkg/decryption"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 )
 
 // Host represents a network host with traffic statistics
@@ -28,7 +28,7 @@ type Host struct {
 	TTL             int    `json:"ttl"` // Last observed TTL
 	FirstSeen       string `json:"firstSeen"`
 	LastSeen        string `json:"lastSeen"`
-	
+
 	// GeoIP fields
 	Country      string  `json:"country"`
 	CountryISO   string  `json:"countryISO"`
@@ -48,21 +48,21 @@ type TimeBucket struct {
 
 // Session represents a bidirectional flow between two endpoints
 type Session struct {
-	Key           string    `json:"key"`
-	SrcIP         string    `json:"src_ip"`
-	SrcPort       int       `json:"src_port"`
-	DstIP         string    `json:"dst_ip"`
-	DstPort       int       `json:"dst_port"`
-	Protocol      string    `json:"protocol"`
-	StartTime     time.Time `json:"start_time"`
-	EndTime       time.Time `json:"end_time"`
-	Duration      string    `json:"duration"` // Human readable duration
-	PacketCount   int       `json:"packet_count"`
-	ByteCount     int64     `json:"byte_count"`
-	PayloadSize   int64     `json:"payload_size"`
-	JA3           string    `json:"ja3"`        // Full JA3 string
-	JA3Digest     string    `json:"ja3_digest"` // MD5 hash
-	DecryptedContent string `json:"decrypted_content"`
+	Key              string    `json:"key"`
+	SrcIP            string    `json:"src_ip"`
+	SrcPort          int       `json:"src_port"`
+	DstIP            string    `json:"dst_ip"`
+	DstPort          int       `json:"dst_port"`
+	Protocol         string    `json:"protocol"`
+	StartTime        time.Time `json:"start_time"`
+	EndTime          time.Time `json:"end_time"`
+	Duration         string    `json:"duration"` // Human readable duration
+	PacketCount      int       `json:"packet_count"`
+	ByteCount        int64     `json:"byte_count"`
+	PayloadSize      int64     `json:"payload_size"`
+	JA3              string    `json:"ja3"`        // Full JA3 string
+	JA3Digest        string    `json:"ja3_digest"` // MD5 hash
+	DecryptedContent string    `json:"decrypted_content"`
 }
 
 // sessionKey for optimized map lookups
@@ -76,16 +76,16 @@ type sessionKey struct {
 
 // Analyzer performs network traffic analysis
 type Analyzer struct {
-	Hosts          map[string]*Host
-	Sessions       map[sessionKey]*Session
-	Timeline       map[int64]*TimeBucket // Key: Unix Timestamp (seconds)
+	Hosts           map[string]*Host
+	Sessions        map[sessionKey]*Session
+	Timeline        map[int64]*TimeBucket // Key: Unix Timestamp (seconds)
 	FirstPacketTime time.Time
 	LastPacketTime  time.Time
-	geoIP          *geoip.GeoIPService
-	decryptor      *decryption.Decryptor
-	mu             sync.Mutex
-	ProtocolCounts map[string]int        // Key: TCP, UDP, ICMP
-	PortCounts     map[int]int           // Key: Destination Port
+	geoIP           *geoip.GeoIPService
+	decryptor       *decryption.Decryptor
+	mu              sync.Mutex
+	ProtocolCounts  map[string]int // Key: TCP, UDP, ICMP
+	PortCounts      map[int]int    // Key: Destination Port
 }
 
 func NewAnalyzer(geoIP *geoip.GeoIPService, decryptor *decryption.Decryptor) *Analyzer {
@@ -149,7 +149,7 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 		protocol = "TCP"
 		protoID = 6
 		a.ProtocolCounts["TCP"]++
-		
+
 		// If SYN-ACK, the sender is a Server and the SrcPort is Open (Host Analysis)
 		if t.SYN && t.ACK {
 			srcIP := ip.SrcIP.String()
@@ -215,17 +215,17 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 				}
 
 				session = &Session{
-					Key:       strKey,
-					SrcIP:     srcIPStr,
-					SrcPort:   srcPort,
-					DstIP:     dstIPStr,
-					DstPort:   dstPort,
-					Protocol:  protocol,
-					StartTime: meta.Timestamp,
-					EndTime:   meta.Timestamp,
-					Duration:  "0s",
+					Key:         strKey,
+					SrcIP:       srcIPStr,
+					SrcPort:     srcPort,
+					DstIP:       dstIPStr,
+					DstPort:     dstPort,
+					Protocol:    protocol,
+					StartTime:   meta.Timestamp,
+					EndTime:     meta.Timestamp,
+					Duration:    "0s",
 					PacketCount: 0,
-					ByteCount: 0,
+					ByteCount:   0,
 				}
 				a.Sessions[key] = session
 			}
@@ -233,7 +233,7 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 			session.PacketCount++
 			session.PacketCount++
 			session.ByteCount += int64(meta.Length)
-			
+
 			// Update Payload Size
 			if protocol == "TCP" {
 				if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
@@ -255,12 +255,12 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 			// We check payload length > 0
 			if protocol == "TCP" && len(packet.Layer(layers.LayerTypeTCP).(*layers.TCP).Payload) > 0 {
 				tcpPayload := packet.Layer(layers.LayerTypeTCP).(*layers.TCP).Payload
-				
+
 				// TLS Decryption
 				if a.decryptor != nil && (a.decryptor.PrivateKey != nil || len(a.decryptor.KeyLog) > 0) {
 					// 1. Extract Handshake Data (Randoms, PreMasterSecret)
 					a.decryptor.ExtractHandshakeData(session.Key, ip.SrcIP.String(), tcpPayload)
-					
+
 					// 2. Try Decrypting Application Data
 					decrypted, err := a.decryptor.DecryptApplicationData(session.Key, ip.SrcIP.String(), tcpPayload)
 					if err == nil && len(decrypted) > 0 {
@@ -291,7 +291,7 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 					// A Client Hello usually comes very early.
 					// Let's just try to parse every TCP payload for Client Hello if JA3 is empty.
 					// The ja3.ComputeJA3 function validates if it's a Client Hello.
-					
+
 					ja3Str, ja3Hash := ja3.ComputeJA3(tcpPayload)
 					if ja3Hash != "" {
 						session.JA3 = ja3Str
@@ -307,7 +307,7 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 	sender := a.getHost(srcIP)
 	sender.PacketsSent++
 	sender.TTL = int(ip.TTL)
-	
+
 	// Enhanced OS fingerprinting with TCP layer
 	var tcpLayerForOS *layers.TCP
 	if tcpPacket := packet.Layer(layers.LayerTypeTCP); tcpPacket != nil {
@@ -336,12 +336,12 @@ func (a *Analyzer) getHost(ip string) *Host {
 	if host, exists := a.Hosts[ip]; exists {
 		return host
 	}
-	
+
 	host := &Host{
 		IP:        ip,
 		OpenPorts: []int{},
 	}
-	
+
 	// Perform GeoIP lookup if service available
 	if a.geoIP != nil {
 		if geoInfo, err := a.geoIP.Lookup(ip); err == nil && geoInfo != nil {
@@ -354,7 +354,7 @@ func (a *Analyzer) getHost(ip string) *Host {
 			host.Organization = geoInfo.Organization
 		}
 	}
-	
+
 	a.Hosts[ip] = host
 	return host
 }
@@ -373,10 +373,10 @@ func (a *Analyzer) addOpenPort(host *Host, port int) {
 func fingerprintOS(ttl int, tcpLayer *layers.TCP) string {
 	windowSize := 0
 	mss := 0
-	
+
 	if tcpLayer != nil {
 		windowSize = int(tcpLayer.Window)
-		
+
 		// Extract MSS from TCP options
 		for _, opt := range tcpLayer.Options {
 			if opt.OptionType == layers.TCPOptionKind(2) { // MSS option
@@ -386,14 +386,14 @@ func fingerprintOS(ttl int, tcpLayer *layers.TCP) string {
 			}
 		}
 	}
-	
+
 	// REFINED TTL-BASED DETECTION (most reliable indicator)
 	// Windows: 128, 64 (modern Windows can use 64 for local)
 	// Linux/Unix: 64
 	// macOS: 64
 	// Cisco/Solaris: 255
 	// FreeBSD: 64
-	
+
 	// WINDOWS DETECTION
 	if ttl > 64 && ttl <= 128 {
 		// Windows typically uses TTL=128
@@ -410,7 +410,7 @@ func fingerprintOS(ttl int, tcpLayer *layers.TCP) string {
 		}
 		return "Windows"
 	}
-	
+
 	// LINUX/UNIX/macOS DETECTION (TTL=64)
 	if ttl > 32 && ttl <= 64 {
 		// Differentiate Linux from macOS using window size
@@ -432,7 +432,7 @@ func fingerprintOS(ttl int, tcpLayer *layers.TCP) string {
 		}
 		return "Linux/Unix"
 	}
-	
+
 	// CISCO/SOLARIS (TTL=255)
 	if ttl > 128 && ttl <= 255 {
 		if windowSize == 4128 {
@@ -440,12 +440,12 @@ func fingerprintOS(ttl int, tcpLayer *layers.TCP) string {
 		}
 		return "Solaris/Cisco/Network Device"
 	}
-	
+
 	// LOW TTL (Might be VM or behind NAT)
 	if ttl <= 32 {
 		return "Unknown (Low TTL - NAT/VM?)"
 	}
-	
+
 	return "Unknown"
 }
 
@@ -458,12 +458,12 @@ func (a *Analyzer) GetSortedHosts() []*Host {
 	for _, h := range a.Hosts {
 		hosts = append(hosts, h)
 	}
-	
+
 	// Sort by IP (simple string sort for now, ideally numeric)
 	sort.Slice(hosts, func(i, j int) bool {
 		return hosts[i].IP < hosts[j].IP
 	})
-	
+
 	return hosts
 }
 
@@ -514,4 +514,3 @@ func (a *Analyzer) GetSessions() []*Session {
 	})
 	return sessions
 }
-

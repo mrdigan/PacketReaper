@@ -20,7 +20,7 @@ type Call struct {
 	SrcIP       string `json:"src_ip"`
 	DstIP       string `json:"dst_ip"`
 	DurationSec int    `json:"duration_sec"`
-	
+
 	// Internal tracking
 	startTime time.Time
 	endTime   time.Time
@@ -42,7 +42,7 @@ func NewExtractor() *Extractor {
 func (e *Extractor) GetCalls() []Call {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	
+
 	calls := make([]Call, 0, len(e.Calls))
 	for _, call := range e.Calls {
 		// Calculate final duration if still active/unknown
