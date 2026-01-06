@@ -1,5 +1,9 @@
 # PacketReaper
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/mrdigan/PacketReaper)](https://goreportcard.com/report/github.com/mrdigan/PacketReaper)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Wails](https://img.shields.io/badge/Wails-v2-red)](https://wails.io)
+
 PacketReaper is a network forensic analysis tool built with Go (Wails) and React. It is designed to process PCAP files and provide detailed insights into network traffic.
 
 ## Features
