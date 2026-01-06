@@ -88,24 +88,24 @@ func (e *Extractor) ExtractCertificates(packet gopacket.Packet) {
 	// The issue: tls.LayerPayload() returns encrypted application data
 	// Certificates appear in plaintext in TLS handshake messages
 	// Solution: Scan the entire packet payload for certificate patterns
-	
+
 	// Get the raw application layer payload (all TCP data)
 	var appPayload []byte
 	if appLayer := packet.ApplicationLayer(); appLayer != nil {
 		appPayload = appLayer.Payload()
 	}
-	
+
 	if len(appPayload) == 0 {
 		return
 	}
-	
+
 	// Scan for X.509 certificates in the raw TLS stream
 	// Certificates in TLS appear as:
 	// - TLS Record: Content Type (0x16 = Handshake)
 	// - TLS Handshake: Type (0x0b = Certificate)
 	// - Certificate data: DER-encoded X.509 (starts with 0x30 0x82)
 	certs := e.scanForCertificates(appPayload)
-	
+
 	for _, cert := range certs {
 		certInfo := &Certificate{
 			Subject:         getCommonName(cert.Subject.CommonName, cert.DNSNames),
@@ -138,36 +138,36 @@ func (e *Extractor) ExtractFromStream(streamData []byte, srcIP, dstIP string, ds
 	// A stream contains multiple TLS records.
 	// Record format:
 	// Type (1 byte) | Version (2 bytes) | Length (2 bytes) | Fragment (Length bytes)
-	
+
 	offset := 0
 	for offset+5 <= len(streamData) {
 		recordType := streamData[offset]
 		// versionMajor := streamData[offset+1]
 		// versionMinor := streamData[offset+2]
-		
+
 		// Read Length (Big Endian)
 		length := int(streamData[offset+3])<<8 | int(streamData[offset+4])
-		
+
 		// Move to fragment
 		offset += 5
-		
+
 		if offset+length > len(streamData) {
 			// Incomplete record or stream end
 			break
 		}
-		
+
 		// We only care about Handshake records (Type 0x16)
 		if recordType == 0x16 {
 			fragment := streamData[offset : offset+length]
 			e.parseHandshakeFragment(fragment, srcIP, dstIP, dstPort)
 		} else {
-             // If we lose sync or it's not a record, we might want to scan, 
-             // but for now let's assume valid stream.
-             // If we hit SSLv2 (MSB set in length), this simple parser breaks.
-             // SSLv2 ClientHello starts with Type 0x80 (usually).
-             // Let's stick to TLS/SSLv3 for now.
-        }
-		
+			// If we lose sync or it's not a record, we might want to scan,
+			// but for now let's assume valid stream.
+			// If we hit SSLv2 (MSB set in length), this simple parser breaks.
+			// SSLv2 ClientHello starts with Type 0x80 (usually).
+			// Let's stick to TLS/SSLv3 for now.
+		}
+
 		offset += length
 	}
 }
@@ -175,23 +175,23 @@ func (e *Extractor) ExtractFromStream(streamData []byte, srcIP, dstIP string, ds
 func (e *Extractor) parseHandshakeFragment(data []byte, srcIP, dstIP string, dstPort int) {
 	// Handshake Protocol
 	// Type (1 byte) | Length (3 bytes) | Body
-	
+
 	offset := 0
 	for offset+4 <= len(data) {
 		msgType := data[offset]
 		msgLen := int(data[offset+1])<<16 | int(data[offset+2])<<8 | int(data[offset+3])
-		
+
 		offset += 4
 		if offset+msgLen > len(data) {
 			break
 		}
-		
+
 		// Certificate Message (Type 0x0b)
 		if msgType == 0x0b {
 			certMsg := data[offset : offset+msgLen]
 			e.parseCertificateMessage(certMsg, srcIP, dstIP, dstPort)
 		}
-		
+
 		offset += msgLen
 	}
 }
@@ -199,25 +199,25 @@ func (e *Extractor) parseHandshakeFragment(data []byte, srcIP, dstIP string, dst
 func (e *Extractor) parseCertificateMessage(data []byte, srcIP, dstIP string, dstPort int) {
 	// Certificate Message Format:
 	// Certs Length (3 bytes) | Certificates...
-	
+
 	if len(data) < 3 {
 		return
 	}
-	
+
 	// totalCertLen := int(data[0])<<16 | int(data[1])<<8 | int(data[2])
 	offset := 3
-	
+
 	for offset+3 <= len(data) {
 		// Each certificate is: Length (3 bytes) | ASN.1 Cert Data
 		certLen := int(data[offset])<<16 | int(data[offset+1])<<8 | int(data[offset+2])
 		offset += 3
-		
+
 		if offset+certLen > len(data) {
 			break
 		}
-		
+
 		certData := data[offset : offset+certLen]
-		
+
 		// Parse this individual certificate
 		parsedCerts := e.parseCertificates(certData)
 		for _, cert := range parsedCerts {
@@ -239,7 +239,7 @@ func (e *Extractor) parseCertificateMessage(data []byte, srcIP, dstIP string, ds
 			}
 			e.addCertificate(certInfo)
 		}
-		
+
 		offset += certLen
 	}
 }
@@ -247,47 +247,47 @@ func (e *Extractor) parseCertificateMessage(data []byte, srcIP, dstIP string, ds
 // scanForCertificates searches for X.509 certificates in raw data
 func (e *Extractor) scanForCertificates(data []byte) []*x509.Certificate {
 	var certs []*x509.Certificate
-	
+
 	// Scan for DER-encoded certificate patterns
 	// X.509 certificates start with: 0x30 (SEQUENCE)
-	// Followed by length. 
+	// Followed by length.
 	// Short form: 0x00-0x7F (0-127 bytes)
 	// Long form: 0x81-0x83 (128 bytes to ~16MB)
-	
+
 	minCertSize := 100 // Heuristic: valid certs are rarely smaller than this
-	
+
 	for i := 0; i < len(data)-minCertSize; i++ {
 		// Look for DER SEQUENCE tag (0x30)
 		if data[i] != 0x30 {
 			continue
 		}
-		
+
 		// Check length byte
 		lenByte := data[i+1]
-		
+
 		// We are looking for the START of a certificate.
 		// Common cases:
 		// 0x82: Length is in next 2 bytes (common for > 255 bytes)
 		// 0x81: Length is in next 1 byte (common for 128-255 bytes)
 		// 0x83: Length is in next 3 bytes (common for huge certs/chains)
-		
+
 		isValidStart := false
 		if lenByte == 0x81 || lenByte == 0x82 || lenByte == 0x83 {
 			isValidStart = true
-		} else if lenByte < 0x80 && int(lenByte) > 0 { 
+		} else if lenByte < 0x80 && int(lenByte) > 0 {
 			// Short form, unlikely for full cert but possible for parts
 			// We skip this for now to reduce false positives unless we're desperate
-			isValidStart = false 
+			isValidStart = false
 		}
 
 		if isValidStart {
 			// Try to parse from this position
 			// We pass a slice starting at i
 			remaining := data[i:]
-			
+
 			// Quick optimization: Check if buffer has enough bytes for the declared length
-			// (This requires parsing the length, which ParseCertificate does anyway, 
-			// but we can save the function call overhead if we wanted. 
+			// (This requires parsing the length, which ParseCertificate does anyway,
+			// but we can save the function call overhead if we wanted.
 			// specific x509 parsing is heavy, so we rely on checks)
 
 			parsedCerts := e.parseCertificates(remaining)
@@ -296,12 +296,12 @@ func (e *Extractor) scanForCertificates(data []byte) []*x509.Certificate {
 				// Skip ahead. A cert is at least minCertSize.
 				// Ideally we skip by the actual size of the cert we found,
 				// but we don't easily have that from parsedCerts[0].Raw (we do!)
-				
+
 				bytesConsumed := 0
 				for _, c := range parsedCerts {
 					bytesConsumed += len(c.Raw)
 				}
-				
+
 				if bytesConsumed > 0 {
 					i += bytesConsumed - 1 // -1 because loop increments
 				} else {
@@ -310,7 +310,7 @@ func (e *Extractor) scanForCertificates(data []byte) []*x509.Certificate {
 			}
 		}
 	}
-	
+
 	return certs
 }
 

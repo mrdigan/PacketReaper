@@ -13,12 +13,12 @@ import (
 type Parameter struct {
 	Timestamp string `json:"timestamp"`
 	FrameNum  int    `json:"frame_num"`
-	Protocol  string `json:"protocol"`  // "HTTP", "SMTP", "FTP"
-	Type      string `json:"type"`      // "Header", "Cookie", "Query", "POST", "Command"
-	Key       string `json:"key"`       // e.g., "User-Agent", "session_id", "MAIL FROM"
-	Value     string `json:"value"`     // Actual parameter value
-	URL       string `json:"url"`       // Request URL (HTTP only)
-	Method    string `json:"method"`    // GET, POST, etc. (HTTP only)
+	Protocol  string `json:"protocol"` // "HTTP", "SMTP", "FTP"
+	Type      string `json:"type"`     // "Header", "Cookie", "Query", "POST", "Command"
+	Key       string `json:"key"`      // e.g., "User-Agent", "session_id", "MAIL FROM"
+	Value     string `json:"value"`    // Actual parameter value
+	URL       string `json:"url"`      // Request URL (HTTP only)
+	Method    string `json:"method"`   // GET, POST, etc. (HTTP only)
 	SourceIP  string `json:"source_ip"`
 	DestIP    string `json:"dest_ip"`
 }
@@ -61,22 +61,22 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet, frameNum int) {
 	srcPort := int(tcp.SrcPort)
 
 	// HTTP Detection (port 80 or HTTP signatures)
-	if dstPort == 80 || srcPort == 80 || strings.HasPrefix(payload, "GET ") || 
-	   strings.HasPrefix(payload, "POST ") || strings.HasPrefix(payload, "HTTP/") {
+	if dstPort == 80 || srcPort == 80 || strings.HasPrefix(payload, "GET ") ||
+		strings.HasPrefix(payload, "POST ") || strings.HasPrefix(payload, "HTTP/") {
 		e.extractHTTP(payload, frameNum, timestamp, srcIP, dstIP)
 	}
 
 	// SMTP Detection (port 25, 587, or SMTP commands)
 	if dstPort == 25 || dstPort == 587 || srcPort == 25 || srcPort == 587 ||
-	   strings.HasPrefix(payload, "MAIL FROM") || strings.HasPrefix(payload, "RCPT TO") ||
-	   strings.HasPrefix(payload, "DATA") || strings.HasPrefix(payload, "EHLO") {
+		strings.HasPrefix(payload, "MAIL FROM") || strings.HasPrefix(payload, "RCPT TO") ||
+		strings.HasPrefix(payload, "DATA") || strings.HasPrefix(payload, "EHLO") {
 		e.extractSMTP(payload, frameNum, timestamp, srcIP, dstIP)
 	}
 
 	// FTP Detection (port 21 or FTP commands)
 	if dstPort == 21 || srcPort == 21 || strings.HasPrefix(payload, "USER ") ||
-	   strings.HasPrefix(payload, "PASS ") || strings.HasPrefix(payload, "STOR ") ||
-	   strings.HasPrefix(payload, "RETR ") {
+		strings.HasPrefix(payload, "PASS ") || strings.HasPrefix(payload, "STOR ") ||
+		strings.HasPrefix(payload, "RETR ") {
 		e.extractFTP(payload, frameNum, timestamp, srcIP, dstIP)
 	}
 }
@@ -96,7 +96,7 @@ func (e *Extractor) extractHTTP(payload string, frameNum int, timestamp, srcIP, 
 	var method, fullURL string
 
 	if strings.HasPrefix(requestLine, "GET ") || strings.HasPrefix(requestLine, "POST ") ||
-	   strings.HasPrefix(requestLine, "PUT ") || strings.HasPrefix(requestLine, "DELETE ") {
+		strings.HasPrefix(requestLine, "PUT ") || strings.HasPrefix(requestLine, "DELETE ") {
 		parts := strings.Fields(requestLine)
 		if len(parts) >= 2 {
 			method = parts[0]

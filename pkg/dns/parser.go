@@ -10,15 +10,15 @@ import (
 
 // Record represents a DNS query or response
 type Record struct {
-	Timestamp   string `json:"timestamp"`
-	srcIP       string
-	dstIP       string
+	Timestamp     string `json:"timestamp"`
+	srcIP         string
+	dstIP         string
 	TransactionID uint16 `json:"transaction_id"`
-	Query       string `json:"query"`
-	Type        string `json:"type"` // A, AAAA, MX, etc.
-	Answers     string `json:"answers"` // Formatted string of answers
-	ResponseCode string `json:"response_code"`
-	IsResponse  bool   `json:"is_response"`
+	Query         string `json:"query"`
+	Type          string `json:"type"`    // A, AAAA, MX, etc.
+	Answers       string `json:"answers"` // Formatted string of answers
+	ResponseCode  string `json:"response_code"`
+	IsResponse    bool   `json:"is_response"`
 }
 
 // Parser handles DNS packet parsing
@@ -38,9 +38,9 @@ func (p *Parser) ParsePacket(packet gopacket.Packet) {
 	if dnsLayer == nil {
 		return
 	}
-	
+
 	dns, _ := dnsLayer.(*layers.DNS)
-	
+
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	var src, dst string
 	if ipLayer != nil {

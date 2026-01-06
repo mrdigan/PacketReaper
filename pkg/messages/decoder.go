@@ -2,10 +2,10 @@ package messages
 
 import (
 	"encoding/base64"
+	"io"
 	"mime"
 	"mime/quotedprintable"
 	"strings"
-	"io"
 )
 
 // DecodeBase64 decodes a Base64-encoded string
@@ -48,7 +48,7 @@ func ParseMIME(contentType, body string) (mainBody string, attachments []Attachm
 
 	// Split by boundary
 	parts := strings.Split(body, "--"+boundary)
-	
+
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" || part == "--" {
@@ -75,7 +75,7 @@ func ParseMIME(contentType, body string) (mainBody string, attachments []Attachm
 					// This is likely an attachment
 					filename := ""
 					contentType := ""
-					
+
 					// Extract filename
 					if idx := strings.Index(line, "filename="); idx != -1 {
 						rest := line[idx+9:]

@@ -80,7 +80,7 @@ func ComputeJA3(payload []byte) (string, string) {
 	}
 	ciphers := body[offset : offset+cipherLen]
 	offset += cipherLen
-	
+
 	// Collect Cipher Suites
 	var cipherList []string
 	for i := 0; i < len(ciphers); i += 2 {
@@ -118,7 +118,7 @@ func ComputeJA3(payload []byte) (string, string) {
 	}
 	extTotalLen := int(binary.BigEndian.Uint16(body[offset : offset+2]))
 	offset += 2
-	
+
 	if offset+extTotalLen > len(body) {
 		return buildJA3(sslVersion, cipherList, nil, nil, nil)
 	}

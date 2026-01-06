@@ -1,9 +1,8 @@
 package keywords
 
 import (
-	"strings"
 	"github.com/google/gopacket"
-
+	"strings"
 )
 
 // Match represents a keyword found in a packet
@@ -41,12 +40,12 @@ func (s *Searcher) ScanPacket(packet gopacket.Packet, frameNum int) {
 	if len(payload) == 0 {
 		return
 	}
-	
+
 	text := string(payload)
-	// Simple case-insensitive search? Or exact? 
+	// Simple case-insensitive search? Or exact?
 	// NetworkMiner defaults to exact but allows case-insensitive.
 	// Let's do simple Contains for now.
-	
+
 	for _, kw := range s.Keywords {
 		if strings.Contains(text, kw) {
 			s.addMatch(kw, text, frameNum, packet.Metadata().Timestamp.String())
@@ -66,7 +65,7 @@ func (s *Searcher) addMatch(keyword, text string, frameNum int, timestamp string
 		end = len(text)
 	}
 	context := text[start:end]
-	
+
 	// Clean context for specific chars if needed make it readable
 	context = strings.ReplaceAll(context, "\r", " ")
 	context = strings.ReplaceAll(context, "\n", " ")

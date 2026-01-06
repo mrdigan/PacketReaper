@@ -14,7 +14,7 @@ import (
 type Anomaly struct {
 	FrameNumber int      `json:"frame_number"`
 	Timestamp   string   `json:"timestamp"`
-	Type        string   `json:"type"`        // "Unusual Port", "Protocol Violation", etc.
+	Type        string   `json:"type"` // "Unusual Port", "Protocol Violation", etc.
 	Severity    Severity `json:"severity"`
 	Description string   `json:"description"` // Human-readable explanation
 	SourceIP    string   `json:"source_ip"`

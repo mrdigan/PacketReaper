@@ -1,11 +1,6 @@
 package main
 
 import (
-	"context"
-	"crypto/md5"
-	"encoding/base64"
-	"encoding/hex"
-	"fmt"
 	"PacketReaper/pkg/analysis"
 	"PacketReaper/pkg/anomalies"
 	"PacketReaper/pkg/assembly"
@@ -20,6 +15,11 @@ import (
 	"PacketReaper/pkg/parameters"
 	"PacketReaper/pkg/pcap"
 	"PacketReaper/pkg/voip"
+	"context"
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
