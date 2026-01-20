@@ -39,3 +39,6 @@ Desktop.ini
 
 # Logs
 *.log
+
+# PCAP Samples
+pcap samples/

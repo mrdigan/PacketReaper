@@ -169,80 +169,229 @@ func (sa *StreamAssembler) GetAllStreams() []*Stream {
 }
 
 func (sa *StreamAssembler) identifyAndWrite(stream *Stream) bool {
-	// Simple identifier: HTTP
-	// Look for HTTP signatures in the beginning
-	dataStr := string(stream.Data)
+	dataStr := string(stream.Data) // buffer for detection
 	filename := ""
+	extension := ""
+	var fileData []byte
+	sourceRef := ""
 
 	// Check for HTTP Response
+	// We check the buffer first to see if it looks like HTTP
 	if strings.HasPrefix(dataStr, "HTTP/") {
-		// Try to find Content-Type or similar to guess extension,
-		// or just use magic bytes if possible.
-		// For now, let's just dump it as .html if it looks like HTML or .bin
-		if strings.Contains(dataStr, "<html") {
-			filename = stream.ID + ".html"
+		// It identifies as HTTP.
+		// Now we need the FULL data to parse headers properly and extract the body.
+		// If we only use stream.Data, we might be truncated at 4KB.
+
+		var fullStreamData []byte
+		if sa.DataProvider != nil {
+			d, err := sa.DataProvider(stream.ID)
+			if err == nil && len(d) > 0 {
+				fullStreamData = d
+			} else {
+				fullStreamData = stream.Data
+			}
 		} else {
+			fullStreamData = stream.Data
+		}
+
+		if len(fullStreamData) == 0 {
+			return false
+		}
+
+		// Find split point in full data
+		// Convert head to string for searching
+		searchAndDestroyLimit := 8192
+		if len(fullStreamData) < searchAndDestroyLimit {
+			searchAndDestroyLimit = len(fullStreamData)
+		}
+		headStr := string(fullStreamData[:searchAndDestroyLimit])
+
+		splitIdx := strings.Index(headStr, "\r\n\r\n")
+
+		if splitIdx != -1 {
+			headers := headStr[:splitIdx]
+
+			// Body starts after \r\n\r\n (4 bytes)
+			bodyStart := splitIdx + 4
+
+			if bodyStart < len(fullStreamData) {
+				fileData = fullStreamData[bodyStart:]
+			} else {
+				fileData = []byte{} // Empty body
+			}
+
+			// 1. Try Content-Disposition
+			// Content-Disposition: attachment; filename="filename.jpg"
+			if strings.Contains(strings.ToLower(headers), "content-disposition") {
+				lines := strings.Split(headers, "\r\n")
+				for _, line := range lines {
+					if strings.HasPrefix(strings.ToLower(line), "content-disposition:") {
+						if idx := strings.Index(strings.ToLower(line), "filename="); idx != -1 {
+							// simple extract
+							val := line[idx+9:]
+							val = strings.Trim(val, "\" ;")
+							if val != "" {
+								filename = val
+							}
+						}
+					}
+				}
+			}
+
+			// 2. Correlate with Request to get URL/Filename
+			// ID: SrcIP_SrcPort-DstIP_DstPort (Server -> Client)
+			// Request ID: DstIP_DstPort-SrcIP_SrcPort (Client -> Server)
+
+			idParts := strings.Split(stream.ID, "-")
+			if len(idParts) == 2 {
+				revKeyStr := idParts[1] + "-" + idParts[0]
+
+				var reqStream *Stream
+				for _, s := range sa.Streams {
+					if s.ID == revKeyStr {
+						reqStream = s
+						break
+					}
+				}
+
+				if reqStream != nil {
+					// Parse request for URL
+					reqData := string(reqStream.Data)
+					lines := strings.Split(reqData, "\r\n")
+					if len(lines) > 0 {
+						reqLine := lines[0] // GET ...
+						parts := strings.Fields(reqLine)
+						if len(parts) >= 2 {
+							url := parts[1]
+
+							// Extract Host header
+							host := ""
+							for _, l := range lines {
+								if strings.HasPrefix(strings.ToLower(l), "host:") {
+									host = strings.TrimSpace(strings.SplitN(l, ":", 2)[1])
+									break
+								}
+							}
+
+							if host != "" {
+								sourceRef = fmt.Sprintf("%s%s", host, url)
+							} else {
+								sourceRef = url
+							}
+
+							// If we haven't found a filename from headers, assume it from URL
+							if filename == "" {
+								// Extract last part of path
+								if idx := strings.LastIndex(url, "/"); idx != -1 {
+									potential := url[idx+1:]
+									// strip query params
+									if qIdx := strings.Index(potential, "?"); qIdx != -1 {
+										potential = potential[:qIdx]
+									}
+									if potential != "" && strings.Contains(potential, ".") {
+										filename = potential
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// Fallback extension
+			if filename == "" {
+				if strings.Contains(headers, "Content-Type: text/html") {
+					extension = ".html"
+				} else if strings.Contains(headers, "Content-Type: image/jpeg") {
+					extension = ".jpg"
+				} else {
+					extension = ".http_resp"
+				}
+				filename = stream.ID + extension
+			}
+		} else {
+			// Weird split or no split, just take whole
+			fileData = fullStreamData
 			filename = stream.ID + ".http_resp"
 		}
+
 	} else if strings.HasPrefix(dataStr, "GET ") || strings.HasPrefix(dataStr, "POST ") {
-		filename = stream.ID + ".http_req"
+		// Skip requests
+		return false
 	}
 
-	// Magic bytes check (very basic)
-	if len(stream.Data) > 4 {
-		magic := stream.Data[:4]
-		if string(magic) == "%PDF" {
-			filename = stream.ID + ".pdf"
-		} else if magic[0] == 0xFF && magic[1] == 0xD8 && magic[2] == 0xFF {
-			filename = stream.ID + ".jpg"
-		} else if magic[0] == 0x89 && string(magic[1:4]) == "PNG" {
-			filename = stream.ID + ".png"
+	// Magic bytes check (fallback if not HTTP or if we want to confirm)
+	if len(fileData) == 0 && !strings.HasPrefix(dataStr, "HTTP/") {
+		// Use full data for logic check too
+		var fullStreamData []byte
+		if sa.DataProvider != nil {
+			d, err := sa.DataProvider(stream.ID)
+			if err == nil && len(d) > 0 {
+				fullStreamData = d
+			} else {
+				fullStreamData = stream.Data
+			}
+		} else {
+			fullStreamData = stream.Data
+		}
+
+		fileData = fullStreamData
+		if len(fullStreamData) > 4 {
+			magic := fullStreamData[:4]
+			if string(magic) == "%PDF" {
+				filename = stream.ID + ".pdf"
+			} else if magic[0] == 0xFF && magic[1] == 0xD8 && magic[2] == 0xFF {
+				filename = stream.ID + ".jpg"
+				extension = ".jpg"
+			} else if magic[0] == 0x89 && string(magic[1:4]) == "PNG" {
+				filename = stream.ID + ".png"
+				extension = ".png"
+			}
 		}
 	}
 
 	// If we found a likely file/protocol, extract metadata and optionally write it
-	if filename != "" {
-		// Get FULL data for writing/hashing
-		var dataToWrite []byte
-		if sa.DataProvider != nil {
-			fullData, err := sa.DataProvider(stream.ID)
-			if err == nil && len(fullData) > 0 {
-				dataToWrite = fullData
-			} else {
-				dataToWrite = stream.Data
-			}
-		} else {
-			dataToWrite = stream.Data
-		}
-
+	if filename != "" && len(fileData) > 0 {
 		// Calculate Hashes
-		md5Hash := md5.Sum(dataToWrite)
+		md5Hash := md5.Sum(fileData)
 		md5Str := hex.EncodeToString(md5Hash[:])
 
-		sha256Hash := sha256.Sum256(dataToWrite)
+		sha256Hash := sha256.Sum256(fileData)
 		sha256Str := hex.EncodeToString(sha256Hash[:])
 
-		fullPath := filepath.Join(sa.OutputDir, filename)
-		size := int64(len(dataToWrite))
+		// deduplicate name if needed or ensure safe path
+		safeFilename := filepath.Base(filename)
+
+		if !strings.HasPrefix(filename, stream.ID) {
+			safeFilename = fmt.Sprintf("%s_%s", stream.ID, safeFilename)
+		}
+
+		fullPath := filepath.Join(sa.OutputDir, safeFilename)
+		size := int64(len(fileData))
 
 		// If NOT SafeMode, write to disk
 		if !sa.SafeMode {
-			err := os.WriteFile(fullPath, dataToWrite, 0644)
+			err := os.WriteFile(fullPath, fileData, 0644)
 			if err != nil {
 				return false // Failed to write
 			}
 		} else {
-			fullPath = "[Only in Memory] " + filename // Marker for UI
+			fullPath = "[Only in Memory] " + safeFilename // Marker for UI
+		}
+
+		displaySource := stream.SrcIP
+		if sourceRef != "" {
+			displaySource = fmt.Sprintf("%s (%s)", stream.SrcIP, sourceRef)
 		}
 
 		sa.FilesWritten = append(sa.FilesWritten, FileDetail{
-			Filename:  filename,
+			Filename:  filename, // Display name
 			Size:      size,
 			Path:      fullPath,
 			Extension: filepath.Ext(filename),
 			MD5:       md5Str,
 			SHA256:    sha256Str,
-			SourceIP:  stream.SrcIP,
+			SourceIP:  displaySource,
 			DestIP:    stream.DstIP,
 		})
 		return true

@@ -15,13 +15,14 @@ PacketReaper includes a wide range of analysis capabilities:
 *   **JA3 Fingerprinting**: Extracts TLS client fingerprints for identifying malicious clients.
 *   **GeoIP & ASN Lookup**: Resolves IP addresses to physical locations and Autonomous Systems (requires Maxmind DBs).
 *   **Decryption**: Supports TLS decryption if provided with the appropriate keys.
-*   **Credential Extraction**: Identifies and extracts cleartext credentials from protocols like HTTP, FTP, etc.
+*   **Credential Extraction**: Identifies and extracts credentials from **Kerberos**, **Telnet**, **POP3**, **IMAP**, **SMTP**, **HTTP**, and **FTP**.
 *   **VoIP Analysis**: Extracts and analyzes SIP/RTP streams.
 *   **DNS Analysis**: Parses and visualizes DNS queries and responses.
 *   **Certificate Extraction**: Parsons and extracts X.509 certificates from TLS handshakes.
 *   **File Extraction**: Reconstructs files (images, documents, executables) transferred over the network.
 *   **Message Extraction**: Reconstructs chat messages (IRC, etc.).
 *   **Keyword Search**: Fast search across packet payloads.
+*   **CSV Export**: Export extracted data (Credentials, Files, Certificates, etc.) to CSV for external analysis.
 
 ## Prerequisites
 
