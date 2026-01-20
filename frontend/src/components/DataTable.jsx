@@ -111,14 +111,57 @@ const DataTable = ({ title, data, columns, rowKey, onRowClick, actions, initialF
         );
     }
 
+    // --- CSV Export ---
+    const downloadCSV = () => {
+        if (!processedData || processedData.length === 0) return;
+
+        // Filter out columns that don't have an accessor (like actions)
+        const exportableColumns = columns.filter(col => col.accessor);
+
+        const headers = exportableColumns.map(col => col.header).join(',');
+
+        const rows = processedData.map(row => {
+            return exportableColumns.map(col => {
+                let val = getNestedValue(row, col.accessor);
+                if (val === null || val === undefined) val = '';
+                // Escape quotes and wrap in quotes if contains comma or newline
+                const strVal = String(val);
+                if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n')) {
+                    return `"${strVal.replace(/"/g, '""')}"`;
+                }
+                return strVal;
+            }).join(',');
+        });
+
+        const csvContent = [headers, ...rows].join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `${(title || 'export').replace(/\s+/g, '_').toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     return (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-visible mb-6 transition-colors duration-200 flex flex-col h-full max-h-[600px]">
             {title && (
                 <div className="px-6 py-3 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-800 shrink-0">
                     <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide text-xs">{title}</h3>
-                    <span className="px-2 py-0.5 rounded text-xs font-mono bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
-                        {processedData.length} / {data.length} RECS
-                    </span>
+                    <div className="flex items-center gap-3">
+                        <span className="px-2 py-0.5 rounded text-xs font-mono bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
+                            {processedData.length} / {data.length} RECS
+                        </span>
+                        <button
+                            onClick={downloadCSV}
+                            className="text-xs flex items-center gap-1 px-2 py-1 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded transition-colors"
+                            title="Export to CSV"
+                        >
+                            <Filter size={10} className="transform rotate-90" /> CSV
+                        </button>
+                    </div>
                 </div>
             )}
 
