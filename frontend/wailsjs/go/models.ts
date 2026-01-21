@@ -175,6 +175,8 @@ export namespace assembly {
 	    sha256: string;
 	    source_ip: string;
 	    dest_ip: string;
+	    source_port: number;
+	    dest_port: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new FileDetail(source);
@@ -190,6 +192,8 @@ export namespace assembly {
 	        this.sha256 = source["sha256"];
 	        this.source_ip = source["source_ip"];
 	        this.dest_ip = source["dest_ip"];
+	        this.source_port = source["source_port"];
+	        this.dest_port = source["dest_port"];
 	    }
 	}
 
@@ -243,7 +247,9 @@ export namespace credentials {
 	export class Credential {
 	    protocol: string;
 	    client_ip: string;
+	    client_port: string;
 	    server_ip: string;
+	    server_port: string;
 	    username: string;
 	    password: string;
 	    captured: boolean;
@@ -256,7 +262,9 @@ export namespace credentials {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.protocol = source["protocol"];
 	        this.client_ip = source["client_ip"];
+	        this.client_port = source["client_port"];
 	        this.server_ip = source["server_ip"];
+	        this.server_port = source["server_port"];
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.captured = source["captured"];
@@ -362,6 +370,8 @@ export namespace main {
 	    filename: string;
 	    data: string;
 	    source_ip: string;
+	    source_port: number;
+	    dest_port: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ImageInfo(source);
@@ -372,6 +382,8 @@ export namespace main {
 	        this.filename = source["filename"];
 	        this.data = source["data"];
 	        this.source_ip = source["source_ip"];
+	        this.source_port = source["source_port"];
+	        this.dest_port = source["dest_port"];
 	    }
 	}
 	export class PcapMetadata {

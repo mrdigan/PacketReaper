@@ -12,12 +12,14 @@ import (
 
 // Credential represents a discovered username/password pair
 type Credential struct {
-	Protocol string `json:"protocol"`
-	ClientIP string `json:"client_ip"`
-	ServerIP string `json:"server_ip"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Captured bool   `json:"captured"` // captured in this file
+	Protocol   string `json:"protocol"`
+	ClientIP   string `json:"client_ip"`
+	ClientPort string `json:"client_port"` // Port as string to handle "21", "80", etc.
+	ServerIP   string `json:"server_ip"`
+	ServerPort string `json:"server_port"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Captured   bool   `json:"captured"` // captured in this file
 }
 
 // Extractor handles credential extraction
@@ -66,13 +68,13 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 
 	// 1. HTTP Basic Auth
 	if strings.Contains(payloadStr, "Authorization: Basic ") {
-		e.parseHttpBasic(payloadStr, srcIP, dstIP)
+		e.parseHttpBasic(payloadStr, srcIP, srcPort, dstIP, dstPort)
 	}
 
 	// 2. FTP (Plaintext)
 	if strings.HasPrefix(payloadStr, "USER ") {
 		user := strings.TrimSpace(strings.TrimPrefix(payloadStr, "USER "))
-		e.addCredential("FTP", srcIP, dstIP, user, "<pending>")
+		e.addCredential("FTP", srcIP, srcPort, dstIP, dstPort, user, "<pending>")
 	} else if strings.HasPrefix(payloadStr, "PASS ") {
 		pass := strings.TrimSpace(strings.TrimPrefix(payloadStr, "PASS "))
 		e.updateLastPassword("FTP", srcIP, dstIP, pass)
@@ -89,7 +91,7 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	// 4. POP3
 	if strings.HasPrefix(payloadStr, "USER ") && (strings.Contains(dstPort, "110") || strings.Contains(srcPort, "110")) {
 		user := strings.TrimSpace(strings.TrimPrefix(payloadStr, "USER "))
-		e.addCredential("POP3", srcIP, dstIP, user, "<pending>")
+		e.addCredential("POP3", srcIP, srcPort, dstIP, dstPort, user, "<pending>")
 	} else if strings.HasPrefix(payloadStr, "PASS ") && (strings.Contains(dstPort, "110") || strings.Contains(srcPort, "110")) {
 		pass := strings.TrimSpace(strings.TrimPrefix(payloadStr, "PASS "))
 		e.updateLastPassword("POP3", srcIP, dstIP, pass)
@@ -104,7 +106,7 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 			// expected: [TAG] LOGIN user pass
 			for i, p := range parts {
 				if strings.ToLower(p) == "login" && i+2 < len(parts) {
-					e.addCredential("IMAP", srcIP, dstIP, parts[i+1], parts[i+2])
+					e.addCredential("IMAP", srcIP, srcPort, dstIP, dstPort, parts[i+1], parts[i+2])
 				}
 			}
 		}
@@ -121,9 +123,9 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 				// PLAIN auth format: \0user\0pass or user\0user\0pass
 				parts := strings.Split(string(decoded), "\x00")
 				if len(parts) >= 3 {
-					e.addCredential("SMTP", srcIP, dstIP, parts[1], parts[2])
+					e.addCredential("SMTP", srcIP, srcPort, dstIP, dstPort, parts[1], parts[2])
 				} else if len(parts) >= 2 {
-					e.addCredential("SMTP", srcIP, dstIP, parts[0], parts[1])
+					e.addCredential("SMTP", srcIP, srcPort, dstIP, dstPort, parts[0], parts[1])
 				}
 			}
 		}
@@ -131,11 +133,11 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 
 	// 7. Kerberos (Port 88)
 	if strings.Contains(dstPort, "88") || strings.Contains(srcPort, "88") {
-		e.extractKerberos(payload, srcIP, dstIP)
+		e.extractKerberos(payload, srcIP, srcPort, dstIP, dstPort)
 	}
 }
 
-func (e *Extractor) parseHttpBasic(payload, srcIP, dstIP string) {
+func (e *Extractor) parseHttpBasic(payload, srcIP, srcPort, dstIP, dstPort string) {
 	lines := strings.Split(payload, "\r\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "Authorization: Basic ") {
@@ -144,14 +146,14 @@ func (e *Extractor) parseHttpBasic(payload, srcIP, dstIP string) {
 			if err == nil {
 				parts := strings.SplitN(string(decoded), ":", 2)
 				if len(parts) == 2 {
-					e.addCredential("HTTP", srcIP, dstIP, parts[0], parts[1])
+					e.addCredential("HTTP", srcIP, srcPort, dstIP, dstPort, parts[0], parts[1])
 				}
 			}
 		}
 	}
 }
 
-func (e *Extractor) addCredential(proto, client, server, user, pass string) {
+func (e *Extractor) addCredential(proto, client, clientPort, server, serverPort, user, pass string) {
 	// Check for duplicates
 	for _, c := range e.Credentials {
 		if c.Protocol == proto && c.ClientIP == client && c.ServerIP == server && c.Username == user && c.Password == pass {
@@ -159,12 +161,14 @@ func (e *Extractor) addCredential(proto, client, server, user, pass string) {
 		}
 	}
 	e.Credentials = append(e.Credentials, Credential{
-		Protocol: proto,
-		ClientIP: client,
-		ServerIP: server,
-		Username: user,
-		Password: pass,
-		Captured: true,
+		Protocol:   proto,
+		ClientIP:   client,
+		ClientPort: clientPort,
+		ServerIP:   server,
+		ServerPort: serverPort,
+		Username:   user,
+		Password:   pass,
+		Captured:   true,
 	})
 }
 
@@ -179,7 +183,7 @@ func (e *Extractor) updateLastPassword(proto, client, server, pass string) {
 	}
 }
 
-func (e *Extractor) extractKerberos(payload []byte, srcIP, dstIP string) {
+func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPort string) {
 	// Very basic manual parsing for Kerberos AS-REQ
 	// Look for PVNO=5 (02 01 05) and MsgType=AS-REQ (10)
 	// hex: 02 01 05 ...
@@ -346,7 +350,7 @@ func (e *Extractor) extractKerberos(payload []byte, srcIP, dstIP string) {
 		}
 
 		hash := fmt.Sprintf("$krb5pa$%d$%s", etype, hex.EncodeToString(cipher))
-		e.addCredential("Kerberos", srcIP, dstIP, userRealm, hash)
+		e.addCredential("Kerberos", srcIP, srcPort, dstIP, dstPort, userRealm, hash)
 	}
 }
 

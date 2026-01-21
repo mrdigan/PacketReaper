@@ -16,14 +16,16 @@ import (
 
 // FileDetail holds info about extracted files
 type FileDetail struct {
-	Filename  string `json:"filename"`
-	Size      int64  `json:"size"`
-	Path      string `json:"path"`
-	Extension string `json:"extension"`
-	MD5       string `json:"md5"`
-	SHA256    string `json:"sha256"`
-	SourceIP  string `json:"source_ip"`
-	DestIP    string `json:"dest_ip"`
+	Filename   string `json:"filename"`
+	Size       int64  `json:"size"`
+	Path       string `json:"path"`
+	Extension  string `json:"extension"`
+	MD5        string `json:"md5"`
+	SHA256     string `json:"sha256"`
+	SourceIP   string `json:"source_ip"`
+	DestIP     string `json:"dest_ip"`
+	SourcePort int    `json:"source_port"`
+	DestPort   int    `json:"dest_port"`
 }
 
 // StreamAssembler handles 5-tuple streams
@@ -384,15 +386,33 @@ func (sa *StreamAssembler) identifyAndWrite(stream *Stream) bool {
 			displaySource = fmt.Sprintf("%s (%s)", stream.SrcIP, sourceRef)
 		}
 
+		// Parse ports from Stream ID
+		// Format: SrcIP_SrcPort-DstIP_DstPort
+		var sPort, dPort int
+		// Replace _ with space for Sscanf (easier than splitting if we trust format)
+		// Or just split.
+		// ID: 1.2.3.4_123-5.6.7.8_456
+		idParts := strings.Split(stream.ID, "-")
+		if len(idParts) == 2 {
+			p1 := strings.Split(idParts[0], "_")
+			p2 := strings.Split(idParts[1], "_")
+			if len(p1) == 2 && len(p2) == 2 {
+				fmt.Sscanf(p1[1], "%d", &sPort)
+				fmt.Sscanf(p2[1], "%d", &dPort)
+			}
+		}
+
 		sa.FilesWritten = append(sa.FilesWritten, FileDetail{
-			Filename:  filename, // Display name
-			Size:      size,
-			Path:      fullPath,
-			Extension: filepath.Ext(filename),
-			MD5:       md5Str,
-			SHA256:    sha256Str,
-			SourceIP:  displaySource,
-			DestIP:    stream.DstIP,
+			Filename:   filename, // Display name
+			Size:       size,
+			Path:       fullPath,
+			Extension:  filepath.Ext(filename),
+			MD5:        md5Str,
+			SHA256:     sha256Str,
+			SourceIP:   displaySource,
+			DestIP:     stream.DstIP,
+			SourcePort: sPort,
+			DestPort:   dPort,
 		})
 		return true
 	}

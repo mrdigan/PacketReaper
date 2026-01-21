@@ -74,7 +74,7 @@ const StreamViewer = ({ session, onClose }) => {
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 overflow-hidden flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-gray-200 dark:divide-gray-700">
+                <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-200 dark:divide-gray-700">
 
                     {/* Outbound (Client -> Server) */}
                     <div className="flex-1 flex flex-col min-h-0 bg-blue-50/30 dark:bg-blue-900/10">

@@ -149,9 +149,11 @@ type PcapMetadata struct {
 }
 
 type ImageInfo struct {
-	Filename string `json:"filename"`
-	Data     string `json:"data"` // Base64
-	SourceIP string `json:"source_ip"`
+	Filename   string `json:"filename"`
+	Data       string `json:"data"` // Base64
+	SourceIP   string `json:"source_ip"`
+	SourcePort int    `json:"source_port"`
+	DestPort   int    `json:"dest_port"`
 }
 
 // ProcessPcapFile is exposed to the frontend
@@ -444,9 +446,11 @@ func (a *App) ProcessPcapFile(filename string, keywordsList []string) PcapResult
 			if err == nil {
 				b64 := base64.StdEncoding.EncodeToString(data)
 				images = append(images, ImageInfo{
-					Filename: file,
-					Data:     b64,
-					SourceIP: fileInfo.SourceIP,
+					Filename:   file,
+					Data:       b64,
+					SourceIP:   fileInfo.SourceIP,
+					SourcePort: fileInfo.SourcePort,
+					DestPort:   fileInfo.DestPort,
 				})
 			}
 		}

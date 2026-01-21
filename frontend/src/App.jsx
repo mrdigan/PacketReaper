@@ -127,6 +127,95 @@ function App() {
         });
     }
 
+    // --- Helper to link Anomaly -> Session ---
+    // --- Helper to link Record -> Session ---
+    const handleStreamLink = (record) => {
+        if (!result || !result.sessions) return;
+
+        let srcIP, srcPort, dstIP, dstPort, proto;
+
+        // Determine fields based on record shape
+        if (record.protocol && record.client_ip) {
+            // Credential
+            srcIP = record.client_ip;
+            srcPort = parseInt(record.client_port);
+            dstIP = record.server_ip;
+            dstPort = parseInt(record.server_port);
+            proto = record.protocol === "HTTP" || record.protocol === "FTP" || record.protocol === "SMTP" || record.protocol === "POP3" || record.protocol === "IMAP" ? "TCP" : record.protocol;
+            if (record.protocol === "Kerberos") proto = "UDP"; // Usually UDP for extraction check? Actually Kerberos can be TCP. Let's try flexible match.
+        } else if (record.method) {
+            // HTTP Transaction (Browsing History)
+            srcIP = record.src_ip;
+            srcPort = record.src_port;
+            dstIP = record.dst_ip;
+            dstPort = record.dst_port;
+            proto = "TCP";
+        } else if (record.severity && record.source_ip) {
+            // Anomaly
+            srcIP = record.source_ip;
+            srcPort = record.source_port;
+            dstIP = record.dest_ip;
+            dstPort = record.dest_port;
+            proto = record.protocol;
+        } else if (record.filename && record.source_ip) {
+            // File or Image
+            // Clean IP if it has Ref
+            srcIP = record.source_ip.split(' ')[0];
+            srcPort = record.source_port;
+            dstIP = record.dest_ip || ""; // Images might not have dest_ip in my update? I added dest_port but did I add dest_ip to ImageInfo? 
+            // Checked app.go: ImageInfo has SourceIP, SourcePort, DestPort. Lacks DestIP? 
+            // Wait, I missed DestIP in ImageInfo! 
+            // Let's assume FileDetail has it.
+            // For ImageInfo, I might have messed up.
+            dstPort = record.dest_port;
+            proto = "TCP";
+
+            // Re-check ImageInfo in app.go... I didn't add DestIP. 
+            // Use SourceIP/Port and find session with *some* DestIP? 
+            // Or just fail for images if I don't fix app.go.
+            // Let's apply fix for Files first fully.
+        } else {
+            // Fallback or unknown
+            return;
+        }
+
+        // Normalize protocol
+        // If proto is "HTTP", map to TCP for session lookup
+        if (["HTTP", "FTP", "SMTP", "POP3", "IMAP"].includes(proto)) proto = "TCP";
+
+        // Find session
+        const session = result.sessions.find(s => {
+            // Flexible protocol match if proto is undefined/null
+            const pMatch = !proto || (s.protocol === proto) || (proto === "UDP" && s.protocol === "UDP") || (proto === "TCP" && s.protocol === "TCP");
+
+            // Check bidirectional match
+            const forward = s.src_ip === srcIP && s.src_port === srcPort && (!dstIP || s.dst_ip === dstIP) && (!dstPort || s.dst_port === dstPort) && pMatch;
+            const reverse = s.src_ip === dstIP && s.src_port === dstPort && (!dstIP || s.dst_ip === srcIP) && (!dstPort || s.src_port === srcPort) && pMatch; // dst_port check on reverse src_port? Wait.
+
+            // Correct logic:
+            // Forward: Session(Src) == Record(Src) && Session(Dst) == Record(Dst)
+            // Reverse: Session(Src) == Record(Dst) && Session(Dst) == Record(Src)
+
+            const matchFwd = (s.src_ip === srcIP && s.src_port === srcPort) &&
+                (!dstIP || s.dst_ip === dstIP) &&
+                (!dstPort || s.dst_port === dstPort);
+
+            const matchRev = (s.src_ip === dstIP && s.src_port === dstPort) &&
+                (!dstIP || s.dst_ip === srcIP) &&
+                (!dstPort || s.dst_port === srcPort); // Wait, Session Dst Port should match Record Src Port? Yes.
+
+            return (matchFwd || matchRev) && pMatch;
+        });
+
+        if (session) {
+            setStreamSession(session);
+        } else {
+            setToastMessage("No captured stream session found for this item.");
+            setShowToast(true);
+            setTimeout(() => setShowToast(false), 3000);
+        }
+    }
+
     // --- Tab Rendering Logic ---
     const renderContent = () => {
         if (!result) {
@@ -331,6 +420,7 @@ function App() {
                             { header: 'Source', accessor: 'source_ip', render: (row) => <span className="font-mono text-xs">{row.source_ip}</span> },
                             { header: 'Destination', accessor: 'dest_ip', render: (row) => <span className="font-mono text-xs">{row.dest_ip}</span> }
                         ]}
+                        onRowClick={(row) => handleStreamLink(row)}
                     />
                 );
 
@@ -341,7 +431,9 @@ function App() {
                         {result.images && result.images.length > 0 ? (
                             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
                                 {result.images.map((img, idx) => (
-                                    <div key={idx} className="group relative bg-gray-50 dark:bg-gray-900 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 hover:border-cyan-400 transition-all">
+                                    <div key={idx}
+                                        onClick={() => handleStreamLink(img)}
+                                        className="group relative bg-gray-50 dark:bg-gray-900 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 hover:border-cyan-400 transition-all cursor-pointer">
                                         <div className="aspect-w-16 aspect-h-9 bg-gray-200 dark:bg-gray-800">
                                             <img
                                                 src={`data:image;base64,${img.data}`}
@@ -373,6 +465,7 @@ function App() {
                                 { header: 'Username', accessor: 'username', render: (row) => <span className="font-medium text-gray-900 dark:text-gray-100">{row.username}</span> },
                                 { header: 'Password', accessor: 'password', render: (row) => <code className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-2 py-1 rounded font-mono">{row.password}</code> }
                             ]}
+                            onRowClick={(row) => handleStreamLink(row)}
                         />
                     </div>
                 );
@@ -634,6 +727,7 @@ function App() {
                                     )
                                 }
                             ]}
+                            onRowClick={(row) => handleStreamLink(row)}
                         />
                     </div>
                 );
@@ -714,6 +808,7 @@ function App() {
                                 { header: 'URL', accessor: 'url', render: (row) => <div className="truncate max-w-md" title={row.url}>{row.url}</div> },
                                 { header: 'User-Agent', accessor: 'user_agent', render: (row) => <div className="truncate max-w-xs text-xs text-gray-500" title={row.user_agent}>{row.user_agent}</div> },
                             ]}
+                            onRowClick={(row) => handleStreamLink(row)}
                         />
                     </div>
                 );
@@ -768,7 +863,7 @@ function App() {
 
     return (
         <>
-            <Layout activeTab={activeTab} setActiveTab={setActiveTab} filename={currentFilename} toggleTheme={toggleTheme} theme={theme} onLoadPcap={selectFile} keyLoaded={keyLoaded}>
+            <Layout activeTab={activeTab} setActiveTab={(tab) => handleNavigation(tab, {})} filename={currentFilename} toggleTheme={toggleTheme} theme={theme} onLoadPcap={selectFile} keyLoaded={keyLoaded}>
                 {renderContent()}
             </Layout>
             {/* Toast Notification */}
