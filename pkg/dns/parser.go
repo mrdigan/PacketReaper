@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
@@ -41,14 +42,10 @@ func (p *Parser) ParsePacket(packet gopacket.Packet) {
 
 	dns, _ := dnsLayer.(*layers.DNS)
 
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
-	var src, dst string
-	if ipLayer != nil {
-		ip, _ := ipLayer.(*layers.IPv4)
-		src = ip.SrcIP.String()
-		dst = ip.DstIP.String()
-	}
-
+	// Use packetutils for IPv4/IPv6 endpoint extraction
+	ep := packetutils.Extract(packet)
+	src := ep.SrcIP
+	dst := ep.DstIP
 	// We only care if there are questions or answers
 	if dns.QDCount == 0 && dns.ANCount == 0 {
 		return

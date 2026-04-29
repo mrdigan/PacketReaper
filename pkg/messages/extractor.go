@@ -4,8 +4,8 @@ import (
 	"strings"
 	"sync"
 
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 )
 
 // Message represents an email message extracted from network traffic
@@ -64,25 +64,16 @@ func NewExtractor() *Extractor {
 
 // ScanPacket analyzes a packet for email protocol traffic
 func (e *Extractor) ScanPacket(packet gopacket.Packet, frameNum int) {
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
-	tcpLayer := packet.Layer(layers.LayerTypeTCP)
-
-	if ipLayer == nil || tcpLayer == nil {
+	ep := packetutils.Extract(packet)
+	if !ep.HasIP || ep.Protocol != "TCP" || len(ep.Payload) == 0 {
 		return
 	}
 
-	ip, _ := ipLayer.(*layers.IPv4)
-	tcp, _ := tcpLayer.(*layers.TCP)
-
-	if len(tcp.Payload) == 0 {
-		return
-	}
-
-	payload := string(tcp.Payload)
-	srcIP := ip.SrcIP.String()
-	dstIP := ip.DstIP.String()
-	srcPort := int(tcp.SrcPort)
-	dstPort := int(tcp.DstPort)
+	payload := string(ep.Payload)
+	srcIP := ep.SrcIP
+	dstIP := ep.DstIP
+	srcPort := int(ep.SrcPort)
+	dstPort := int(ep.DstPort)
 	timestamp := packet.Metadata().Timestamp.Format("15:04:05")
 
 	// Detect protocol by port

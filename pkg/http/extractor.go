@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
@@ -38,24 +39,14 @@ func NewExtractor() *Extractor {
 
 // ScanPacket analyzes a packet for HTTP attributes
 func (e *Extractor) ScanPacket(packet gopacket.Packet, frameNum int) {
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
-	tcpLayer := packet.Layer(layers.LayerTypeTCP)
-
-	if ipLayer == nil || tcpLayer == nil {
+	ep := packetutils.Extract(packet)
+	if !ep.HasIP || ep.Protocol != "TCP" || len(ep.Payload) == 0 {
 		return
 	}
 
-	ip, _ := ipLayer.(*layers.IPv4)
-	tcp, _ := tcpLayer.(*layers.TCP)
-
-	if len(tcp.Payload) == 0 {
-		return
-	}
-
-	payload := string(tcp.Payload)
+	payload := string(ep.Payload)
 
 	// Quick check for HTTP methods to identify requests
-	// We primarily care about requests for the "Browsing History" view
 	if !strings.HasPrefix(payload, "GET ") &&
 		!strings.HasPrefix(payload, "POST ") &&
 		!strings.HasPrefix(payload, "PUT ") &&
@@ -64,10 +55,18 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet, frameNum int) {
 		return
 	}
 
-	e.extractTransaction(payload, packet, frameNum, ip, tcp)
+	// Grab TCP layer just for port numbers (needed for display)
+	var srcPort, dstPort int
+	if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
+		tcp, _ := tcpLayer.(*layers.TCP)
+		srcPort = int(tcp.SrcPort)
+		dstPort = int(tcp.DstPort)
+	}
+
+	e.extractTransaction(payload, packet, frameNum, ep.SrcIP, ep.DstIP, srcPort, dstPort)
 }
 
-func (e *Extractor) extractTransaction(payload string, packet gopacket.Packet, frameNum int, ip *layers.IPv4, tcp *layers.TCP) {
+func (e *Extractor) extractTransaction(payload string, packet gopacket.Packet, frameNum int, srcIP, dstIP string, srcPort, dstPort int) {
 	lines := strings.Split(payload, "\r\n")
 	if len(lines) == 0 {
 		return
@@ -85,10 +84,10 @@ func (e *Extractor) extractTransaction(payload string, packet gopacket.Packet, f
 	tx := Transaction{
 		Timestamp: packet.Metadata().Timestamp.Format("15:04:05.000"),
 		FrameNum:  frameNum,
-		SrcIP:     ip.SrcIP.String(),
-		SrcPort:   int(tcp.SrcPort),
-		DstIP:     ip.DstIP.String(),
-		DstPort:   int(tcp.DstPort),
+		SrcIP:     srcIP,
+		SrcPort:   srcPort,
+		DstIP:     dstIP,
+		DstPort:   dstPort,
 		Method:    method,
 	}
 

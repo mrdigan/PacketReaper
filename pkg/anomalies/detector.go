@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
@@ -44,15 +45,14 @@ func NewDetector() *Detector {
 
 // ScanPacket analyzes a packet for anomalies
 func (d *Detector) ScanPacket(packet gopacket.Packet, frameNum int) {
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
-	if ipLayer == nil {
+	ep := packetutils.Extract(packet)
+	if !ep.HasIP {
 		return
 	}
 
-	ip, _ := ipLayer.(*layers.IPv4)
 	timestamp := packet.Metadata().Timestamp.Format("15:04:05")
-	srcIP := ip.SrcIP.String()
-	dstIP := ip.DstIP.String()
+	srcIP := ep.SrcIP
+	dstIP := ep.DstIP
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -164,11 +164,9 @@ func (d *Detector) ScanPacket(packet gopacket.Packet, frameNum int) {
 		}
 	}
 
-	// ICMP analysis
+	// ICMPv4 tunneling detection
 	if icmpLayer := packet.Layer(layers.LayerTypeICMPv4); icmpLayer != nil {
 		icmp, _ := icmpLayer.(*layers.ICMPv4)
-
-		// ICMP tunneling detection (large payloads)
 		if len(icmp.Payload) > ICMPMaxNormalSize {
 			d.Anomalies = append(d.Anomalies, Anomaly{
 				FrameNumber: frameNum,
@@ -182,6 +180,26 @@ func (d *Detector) ScanPacket(packet gopacket.Packet, frameNum int) {
 				DestPort:    0,
 				Protocol:    "ICMP",
 				Details:     "Possible data exfiltration via ICMP",
+			})
+		}
+	}
+
+	// ICMPv6 tunneling detection (parity with ICMPv4)
+	if icmp6Layer := packet.Layer(layers.LayerTypeICMPv6); icmp6Layer != nil {
+		icmp6, _ := icmp6Layer.(*layers.ICMPv6)
+		if len(icmp6.Payload) > ICMPMaxNormalSize {
+			d.Anomalies = append(d.Anomalies, Anomaly{
+				FrameNumber: frameNum,
+				Timestamp:   timestamp,
+				Type:        "ICMP Tunneling",
+				Severity:    SeverityHigh,
+				Description: fmt.Sprintf("Large ICMPv6 payload (%d bytes)", len(icmp6.Payload)),
+				SourceIP:    srcIP,
+				SourcePort:  0,
+				DestIP:      dstIP,
+				DestPort:    0,
+				Protocol:    "ICMPv6",
+				Details:     "Possible data exfiltration via ICMPv6",
 			})
 		}
 	}

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 )
 
 // Credential represents a discovered username/password pair
@@ -36,32 +36,21 @@ func NewExtractor() *Extractor {
 
 // ScanPacket checks for credentials in the packet payload
 func (e *Extractor) ScanPacket(packet gopacket.Packet) {
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
-	if ipLayer == nil {
+	ep := packetutils.Extract(packet)
+	if !ep.HasIP {
 		return
 	}
-	ip, _ := ipLayer.(*layers.IPv4)
-
-	tcpLayer := packet.Layer(layers.LayerTypeTCP)
 
 	var payload []byte
 	var srcPort, dstPort string
 	var srcPortInt, dstPortInt uint16
 
-	if tcpLayer != nil {
-		tcp, _ := tcpLayer.(*layers.TCP)
-		payload = tcp.Payload
-		srcPort = tcp.SrcPort.String()
-		dstPort = tcp.DstPort.String()
-		srcPortInt = uint16(tcp.SrcPort)
-		dstPortInt = uint16(tcp.DstPort)
-	} else if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
-		udp, _ := udpLayer.(*layers.UDP)
-		payload = udp.Payload
-		srcPort = udp.SrcPort.String()
-		dstPort = udp.DstPort.String()
-		srcPortInt = uint16(udp.SrcPort)
-		dstPortInt = uint16(udp.DstPort)
+	if ep.Protocol == "TCP" || ep.Protocol == "UDP" {
+		payload = ep.Payload
+		srcPortInt = ep.SrcPort
+		dstPortInt = ep.DstPort
+		srcPort = fmt.Sprintf("%d", ep.SrcPort)
+		dstPort = fmt.Sprintf("%d", ep.DstPort)
 	}
 
 	if len(payload) == 0 {
@@ -69,13 +58,10 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	}
 
 	payloadStr := string(payload)
-	srcIP := ip.SrcIP.String()
-	dstIP := ip.DstIP.String()
+	srcIP := ep.SrcIP
+	dstIP := ep.DstIP
 
-	// 1. HTTP Basic Auth
-	if strings.Contains(payloadStr, "Authorization: Basic ") {
-		e.parseHttpBasic(payloadStr, srcIP, srcPort, dstIP, dstPort)
-	}
+	isTCP := ep.Protocol == "TCP"
 
 	// 2. FTP (Plaintext)
 	if strings.HasPrefix(payloadStr, "USER ") && (dstPortInt == 21 || srcPortInt == 21) {
@@ -84,6 +70,11 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	} else if strings.HasPrefix(payloadStr, "PASS ") && (dstPortInt == 21 || srcPortInt == 21) {
 		pass := strings.TrimSpace(strings.TrimPrefix(payloadStr, "PASS "))
 		e.updateLastPassword("FTP", srcIP, dstIP, pass)
+	}
+
+	// 1. HTTP Basic Auth
+	if strings.Contains(payloadStr, "Authorization: Basic ") {
+		e.parseHttpBasic(payloadStr, srcIP, srcPort, dstIP, dstPort)
 	}
 
 	// 3. Telnet (very basic)
@@ -139,7 +130,7 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 
 	// 7. Kerberos (Port 88)
 	if dstPortInt == 88 || srcPortInt == 88 {
-		e.extractKerberos(payload, srcIP, srcPort, dstIP, dstPort, tcpLayer != nil)
+		e.extractKerberos(payload, srcIP, srcPort, dstIP, dstPort, isTCP)
 	}
 }
 

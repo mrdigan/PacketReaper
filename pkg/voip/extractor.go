@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
@@ -110,15 +111,10 @@ func (e *Extractor) processSIP(content string, packet gopacket.Packet) {
 	// Update or Create Call
 	call, exists := e.Calls[callID]
 	if !exists {
-		// Only create on relevant methods usually, but capturing all associated with ID is safer
-		ipLayer := packet.Layer(layers.LayerTypeIPv4)
-		srcIP := ""
-		dstIP := ""
-		if ipLayer != nil {
-			ip, _ := ipLayer.(*layers.IPv4)
-			srcIP = ip.SrcIP.String()
-			dstIP = ip.DstIP.String()
-		}
+		// Use packetutils for IPv4/IPv6 IP extraction
+		ep := packetutils.Extract(packet)
+		srcIP := ep.SrcIP
+		dstIP := ep.DstIP
 
 		call = &Call{
 			ID:        callID,

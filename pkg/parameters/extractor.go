@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync"
 
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 )
 
 // Parameter represents an extracted protocol parameter
@@ -37,28 +37,19 @@ func NewExtractor() *Extractor {
 
 // ScanPacket analyzes a packet for extractable parameters
 func (e *Extractor) ScanPacket(packet gopacket.Packet, frameNum int) {
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
-	tcpLayer := packet.Layer(layers.LayerTypeTCP)
-
-	if ipLayer == nil || tcpLayer == nil {
+	ep := packetutils.Extract(packet)
+	if !ep.HasIP || ep.Protocol != "TCP" || len(ep.Payload) == 0 {
 		return
 	}
 
-	ip, _ := ipLayer.(*layers.IPv4)
-	tcp, _ := tcpLayer.(*layers.TCP)
-
-	if len(tcp.Payload) == 0 {
-		return
-	}
-
-	payload := string(tcp.Payload)
-	srcIP := ip.SrcIP.String()
-	dstIP := ip.DstIP.String()
+	payload := string(ep.Payload)
+	srcIP := ep.SrcIP
+	dstIP := ep.DstIP
 	timestamp := packet.Metadata().Timestamp.Format("15:04:05")
 
 	// Detect protocol based on port and payload signatures
-	dstPort := int(tcp.DstPort)
-	srcPort := int(tcp.SrcPort)
+	dstPort := int(ep.DstPort)
+	srcPort := int(ep.SrcPort)
 
 	// HTTP Detection (port 80 or HTTP signatures)
 	if dstPort == 80 || srcPort == 80 || strings.HasPrefix(payload, "GET ") ||

@@ -5,13 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 )
 
 // FileDetail holds info about extracted files
@@ -44,10 +45,11 @@ type StreamAssembler struct {
 	DataProvider func(streamID string) ([]byte, error)
 }
 
-// streamKey avoids string allocations for map lookups
+// streamKey avoids string allocations for map lookups.
+// Uses [16]byte IPs to support both IPv4 and IPv6 (IPv4 stored as IPv4-in-IPv6).
 type streamKey struct {
-	srcIP   [4]byte
-	dstIP   [4]byte
+	srcIP   [16]byte
+	dstIP   [16]byte
 	srcPort uint16
 	dstPort uint16
 }
@@ -73,35 +75,26 @@ func NewStreamAssembler(outputDir string, safeMode bool) *StreamAssembler {
 
 // AssemblePacket processes a packet and groups it by flow
 func (sa *StreamAssembler) AssemblePacket(packet gopacket.Packet) {
-	// Parse IP to get 5-tuple
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
-	if ipLayer == nil {
+	ep := packetutils.Extract(packet)
+	if !ep.HasIP {
 		return
 	}
-	ip, _ := ipLayer.(*layers.IPv4)
-
-	var srcPort, dstPort uint16
-	var payload []byte
-
-	// Check for TCP or UDP
-	if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
-		tcp, _ := tcpLayer.(*layers.TCP)
-		srcPort = uint16(tcp.SrcPort)
-		dstPort = uint16(tcp.DstPort)
-		payload = tcp.Payload
-	} else if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
-		udp, _ := udpLayer.(*layers.UDP)
-		srcPort = uint16(udp.SrcPort)
-		dstPort = uint16(udp.DstPort)
-		payload = udp.Payload
-	} else {
-		return // Not TCP or UDP
+	if ep.Protocol != "TCP" && ep.Protocol != "UDP" {
+		return // Only assemble TCP and UDP streams
 	}
 
-	// Create struct key (no allocation)
+	srcPort := ep.SrcPort
+	dstPort := ep.DstPort
+	payload := ep.Payload
+
+	// Build [16]byte keys from the string IPs
 	var key streamKey
-	copy(key.srcIP[:], ip.SrcIP.To4())
-	copy(key.dstIP[:], ip.DstIP.To4())
+	if ip := net.ParseIP(ep.SrcIP); ip != nil {
+		copy(key.srcIP[:], ip.To16())
+	}
+	if ip := net.ParseIP(ep.DstIP); ip != nil {
+		copy(key.dstIP[:], ip.To16())
+	}
 	key.srcPort = srcPort
 	key.dstPort = dstPort
 
@@ -111,11 +104,11 @@ func (sa *StreamAssembler) AssemblePacket(packet gopacket.Packet) {
 	stream, exists := sa.Streams[key]
 	if !exists {
 		// Only allocate string ID when creating new stream
-		strKey := fmt.Sprintf("%s_%d-%s_%d", ip.SrcIP, srcPort, ip.DstIP, dstPort)
+		strKey := fmt.Sprintf("%s_%d-%s_%d", ep.SrcIP, srcPort, ep.DstIP, dstPort)
 		stream = &Stream{
 			ID:    strKey,
-			SrcIP: ip.SrcIP.String(),
-			DstIP: ip.DstIP.String(),
+			SrcIP: ep.SrcIP,
+			DstIP: ep.DstIP,
 		}
 		sa.Streams[key] = stream
 	}
@@ -249,7 +242,10 @@ func (sa *StreamAssembler) identifyAndWrite(stream *Stream) bool {
 			// ID: SrcIP_SrcPort-DstIP_DstPort (Server -> Client)
 			// Request ID: DstIP_DstPort-SrcIP_SrcPort (Client -> Server)
 
-			idParts := strings.Split(stream.ID, "-")
+			// Correlate with the request stream to get URL/Filename.
+			// ID format: SrcIP_SrcPort-DstIP_DstPort
+			// Use SplitN(..., 2) so IPv6 colons in the IP portion don't cause extra splits.
+			idParts := strings.SplitN(stream.ID, "-", 2)
 			if len(idParts) == 2 {
 				revKeyStr := idParts[1] + "-" + idParts[0]
 

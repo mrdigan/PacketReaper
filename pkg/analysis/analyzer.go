@@ -1,8 +1,8 @@
 package analysis
 
 import (
-	"encoding/binary"
 	"fmt"
+	"net"
 	"sort"
 	"sync"
 	"time"
@@ -10,6 +10,7 @@ import (
 	"PacketReaper/pkg/decryption"
 	"PacketReaper/pkg/geoip"
 	"PacketReaper/pkg/ja3"
+	"PacketReaper/pkg/packetutils"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
@@ -65,10 +66,11 @@ type Session struct {
 	DecryptedContent string    `json:"decrypted_content"`
 }
 
-// sessionKey for optimized map lookups
+// sessionKey for optimized map lookups — uses [16]byte to support both IPv4 and IPv6.
+// IPv4 addresses are stored as IPv4-in-IPv6 via net.IP.To16().
 type sessionKey struct {
-	ip1      uint32
-	ip2      uint32
+	ip1      [16]byte
+	ip2      [16]byte
 	port1    uint16
 	port2    uint16
 	protocol uint8
@@ -131,181 +133,157 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 		bucket.Packets++
 	}
 
-	ipLayer := packet.Layer(layers.LayerTypeIPv4)
-	if ipLayer == nil {
+	// Extract endpoint metadata — supports both IPv4 and IPv6
+	ep := packetutils.Extract(packet)
+	if !ep.HasIP {
 		return
 	}
-	ip, _ := ipLayer.(*layers.IPv4)
 
 	// Update Network Counts & Sessions
 	var srcPort, dstPort int
 	var protocol string
 	var protoID uint8
 
-	if tcp := packet.Layer(layers.LayerTypeTCP); tcp != nil {
-		t, _ := tcp.(*layers.TCP)
-		srcPort = int(t.SrcPort)
-		dstPort = int(t.DstPort)
+	switch ep.Protocol {
+	case "TCP":
+		srcPort = int(ep.SrcPort)
+		dstPort = int(ep.DstPort)
 		protocol = "TCP"
 		protoID = 6
 		a.ProtocolCounts["TCP"]++
-
-		// If SYN-ACK, the sender is a Server and the SrcPort is Open (Host Analysis)
-		if t.SYN && t.ACK {
-			srcIP := ip.SrcIP.String()
-			sender := a.getHost(srcIP)
-			a.addOpenPort(sender, srcPort)
+		// If SYN-ACK, the sender is a Server and the SrcPort is Open
+		if tcpL := packet.Layer(layers.LayerTypeTCP); tcpL != nil {
+			t, _ := tcpL.(*layers.TCP)
+			if t.SYN && t.ACK {
+				sender := a.getHost(ep.SrcIP)
+				a.addOpenPort(sender, srcPort)
+			}
 		}
 		a.PortCounts[dstPort]++
-
-	} else if udp := packet.Layer(layers.LayerTypeUDP); udp != nil {
-		u, _ := udp.(*layers.UDP)
-		srcPort = int(u.SrcPort)
-		dstPort = int(u.DstPort)
+	case "UDP":
+		srcPort = int(ep.SrcPort)
+		dstPort = int(ep.DstPort)
 		protocol = "UDP"
 		protoID = 17
 		a.ProtocolCounts["UDP"]++
 		a.PortCounts[dstPort]++
-	} else if packet.Layer(layers.LayerTypeICMPv4) != nil {
+	case "ICMP":
 		protocol = "ICMP"
 		protoID = 1
 		a.ProtocolCounts["ICMP"]++
+	case "ICMPv6":
+		protocol = "ICMPv6"
+		protoID = 58
+		a.ProtocolCounts["ICMPv6"]++
 	}
 
 	// Update Session (Flow)
 	if protocol != "" {
-		srcIP := ip.SrcIP.To4()
-		dstIP := ip.DstIP.To4()
-		if len(srcIP) == 4 && len(dstIP) == 4 {
-			ip1 := binary.BigEndian.Uint32(srcIP)
-			ip2 := binary.BigEndian.Uint32(dstIP)
-			p1 := uint16(srcPort)
-			p2 := uint16(dstPort)
+		// Use net.IP.To16() so both IPv4 and IPv6 fit in [16]byte for map key comparison
+		ip1Raw := net.ParseIP(ep.SrcIP).To16()
+		ip2Raw := net.ParseIP(ep.DstIP).To16()
+		var ip1, ip2 [16]byte
+		copy(ip1[:], ip1Raw)
+		copy(ip2[:], ip2Raw)
+		p1 := uint16(srcPort)
+		p2 := uint16(dstPort)
 
-			// Canonicalize key (sort IPs, then ports)
-			var key sessionKey
-			if ip1 < ip2 {
+		// Canonicalize key: always store lower IP first for bidirectional matching
+		var key sessionKey
+		cmp := compareIP16(ip1, ip2)
+		if cmp < 0 {
+			key = sessionKey{ip1, ip2, p1, p2, protoID}
+		} else if cmp > 0 {
+			key = sessionKey{ip2, ip1, p2, p1, protoID}
+		} else {
+			if p1 <= p2 {
 				key = sessionKey{ip1, ip2, p1, p2, protoID}
-			} else if ip1 > ip2 {
-				key = sessionKey{ip2, ip1, p2, p1, protoID}
 			} else {
-				if p1 < p2 {
-					key = sessionKey{ip1, ip2, p1, p2, protoID}
+				key = sessionKey{ip1, ip2, p2, p1, protoID}
+			}
+		}
+
+		session, exists := a.Sessions[key]
+		if !exists {
+			strKey := ""
+			if cmp < 0 {
+				strKey = fmt.Sprintf("%s:%d-%s:%d-%s", ep.SrcIP, srcPort, ep.DstIP, dstPort, protocol)
+			} else if cmp > 0 {
+				strKey = fmt.Sprintf("%s:%d-%s:%d-%s", ep.DstIP, dstPort, ep.SrcIP, srcPort, protocol)
+			} else {
+				if p1 <= p2 {
+					strKey = fmt.Sprintf("%s:%d-%s:%d-%s", ep.SrcIP, srcPort, ep.DstIP, dstPort, protocol)
 				} else {
-					key = sessionKey{ip1, ip2, p2, p1, protoID}
+					strKey = fmt.Sprintf("%s:%d-%s:%d-%s", ep.DstIP, dstPort, ep.SrcIP, srcPort, protocol)
 				}
 			}
 
-			session, exists := a.Sessions[key]
-			if !exists {
-				// Generate string key only for new sessions
-				srcIPStr := ip.SrcIP.String()
-				dstIPStr := ip.DstIP.String()
-				strKey := ""
-				if ip1 < ip2 {
-					strKey = fmt.Sprintf("%s:%d-%s:%d-%s", srcIPStr, srcPort, dstIPStr, dstPort, protocol)
-				} else if ip1 > ip2 {
-					strKey = fmt.Sprintf("%s:%d-%s:%d-%s", dstIPStr, dstPort, srcIPStr, srcPort, protocol)
-				} else {
-					if p1 < p2 {
-						strKey = fmt.Sprintf("%s:%d-%s:%d-%s", srcIPStr, srcPort, dstIPStr, dstPort, protocol)
-					} else {
-						strKey = fmt.Sprintf("%s:%d-%s:%d-%s", dstIPStr, dstPort, srcIPStr, srcPort, protocol)
-					}
-				}
-
-				session = &Session{
-					Key:         strKey,
-					SrcIP:       srcIPStr,
-					SrcPort:     srcPort,
-					DstIP:       dstIPStr,
-					DstPort:     dstPort,
-					Protocol:    protocol,
-					StartTime:   meta.Timestamp,
-					EndTime:     meta.Timestamp,
-					Duration:    "0s",
-					PacketCount: 0,
-					ByteCount:   0,
-				}
-				a.Sessions[key] = session
+			session = &Session{
+				Key:         strKey,
+				SrcIP:       ep.SrcIP,
+				SrcPort:     srcPort,
+				DstIP:       ep.DstIP,
+				DstPort:     dstPort,
+				Protocol:    protocol,
+				StartTime:   meta.Timestamp,
+				EndTime:     meta.Timestamp,
+				Duration:    "0s",
+				PacketCount: 0,
+				ByteCount:   0,
 			}
+			a.Sessions[key] = session
+		}
 
-			session.PacketCount++
-			session.ByteCount += int64(meta.Length)
+		session.PacketCount++
+		session.ByteCount += int64(meta.Length)
 
-			// Update Payload Size
-			if protocol == "TCP" {
-				if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
-					session.PayloadSize += int64(len(tcpLayer.(*layers.TCP).Payload))
-				}
-			} else if protocol == "UDP" {
-				if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
-					session.PayloadSize += int64(len(udpLayer.(*layers.UDP).Payload))
-				}
-			}
+		// Update Payload Size
+		session.PayloadSize += int64(len(ep.Payload))
 
-			if meta.Timestamp.After(session.EndTime) {
-				session.EndTime = meta.Timestamp
-				session.Duration = session.EndTime.Sub(session.StartTime).String()
-			}
+		if meta.Timestamp.After(session.EndTime) {
+			session.EndTime = meta.Timestamp
+			session.Duration = session.EndTime.Sub(session.StartTime).String()
+		}
 
-			// JA3 Calculation (Client Hello)
-			// Only check if it's the first packet from client (SYN) or just early in stream
-			// We check payload length > 0
-			if protocol == "TCP" && len(packet.Layer(layers.LayerTypeTCP).(*layers.TCP).Payload) > 0 {
-				tcpPayload := packet.Layer(layers.LayerTypeTCP).(*layers.TCP).Payload
+		// JA3 Calculation (Client Hello) — TCP only
+		if protocol == "TCP" && len(ep.Payload) > 0 {
+			tcpPayload := ep.Payload
 
-				// TLS Decryption
-				if a.decryptor != nil && (a.decryptor.PrivateKey != nil || len(a.decryptor.KeyLog) > 0) {
-					// 1. Extract Handshake Data (Randoms, PreMasterSecret)
-					a.decryptor.ExtractHandshakeData(session.Key, ip.SrcIP.String(), tcpPayload)
-
-					// 2. Try Decrypting Application Data
-					decrypted, err := a.decryptor.DecryptApplicationData(session.Key, ip.SrcIP.String(), tcpPayload)
-					if err == nil && len(decrypted) > 0 {
-						// Append to session storage (limit size to 2KB for performance)
-						if len(session.DecryptedContent) < 2048 {
-							// Filter non-printable characters for display
-							cleanData := ""
-							for _, b := range decrypted {
-								if b >= 32 && b <= 126 {
-									cleanData += string(b)
-								} else if b == 10 || b == 13 {
-									cleanData += string(b)
-								} else {
-									cleanData += "."
-								}
+			// TLS Decryption
+			if a.decryptor != nil && (a.decryptor.PrivateKey != nil || len(a.decryptor.KeyLog) > 0) {
+				a.decryptor.ExtractHandshakeData(session.Key, ep.SrcIP, tcpPayload)
+				decrypted, err := a.decryptor.DecryptApplicationData(session.Key, ep.SrcIP, tcpPayload)
+				if err == nil && len(decrypted) > 0 {
+					if len(session.DecryptedContent) < 2048 {
+						cleanData := ""
+						for _, b := range decrypted {
+							if b >= 32 && b <= 126 {
+								cleanData += string(b)
+							} else if b == 10 || b == 13 {
+								cleanData += string(b)
+							} else {
+								cleanData += "."
 							}
-							session.DecryptedContent += cleanData
 						}
+						session.DecryptedContent += cleanData
 					}
 				}
+			}
 
-				// Avoid re-calculating if already set
-				if session.JA3Digest == "" {
-					// Is this the client side?
-					// Session tracks both directions mixed in Key, but SrcIP in session is initialized to First Packet's SrcIP
-					// If this packet matches the session's SrcIP, it MIGHT be the client.
-					// However, a session object is created on the first packet seen.
-					// A Client Hello usually comes very early.
-					// Let's just try to parse every TCP payload for Client Hello if JA3 is empty.
-					// The ja3.ComputeJA3 function validates if it's a Client Hello.
-
-					ja3Str, ja3Hash := ja3.ComputeJA3(tcpPayload)
-					if ja3Hash != "" {
-						session.JA3 = ja3Str
-						session.JA3Digest = ja3Hash
-					}
+			if session.JA3Digest == "" {
+				ja3Str, ja3Hash := ja3.ComputeJA3(tcpPayload)
+				if ja3Hash != "" {
+					session.JA3 = ja3Str
+					session.JA3Digest = ja3Hash
 				}
 			}
 		}
 	}
 
 	// Host Analysis (Sender/Receiver Stats)
-	srcIP := ip.SrcIP.String()
-	sender := a.getHost(srcIP)
+	sender := a.getHost(ep.SrcIP)
 	sender.PacketsSent++
-	sender.TTL = int(ip.TTL)
+	sender.TTL = int(ep.TTL) // Works for both IPv4 TTL and IPv6 HopLimit
 
 	// Enhanced OS fingerprinting with TCP layer
 	var tcpLayerForOS *layers.TCP
@@ -314,8 +292,7 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 	}
 	sender.OS = fingerprintOS(sender.TTL, tcpLayerForOS)
 
-	dstIP := ip.DstIP.String()
-	receiver := a.getHost(dstIP)
+	receiver := a.getHost(ep.DstIP)
 	receiver.PacketsReceived++
 
 	// MAC Addresses
@@ -329,6 +306,20 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 			receiver.MAC = eth.DstMAC.String()
 		}
 	}
+}
+
+// compareIP16 compares two [16]byte IPs lexicographically.
+// Returns negative if a < b, positive if a > b, 0 if equal.
+func compareIP16(a, b [16]byte) int {
+	for i := 0; i < 16; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
 }
 
 func (a *Analyzer) getHost(ip string) *Host {
