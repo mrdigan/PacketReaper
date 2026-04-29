@@ -114,6 +114,38 @@ func (a *App) startup(ctx context.Context) {
 	} else {
 		log.Printf("Warning: Could not open log file: %v", logErr)
 	}
+
+	// Clean up stale stream directories from previous crashes
+	tmpDir := os.TempDir()
+	entries, err := os.ReadDir(tmpDir)
+	if err == nil {
+		cleanedCount := 0
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), "PacketReaper_streams") {
+				stalePath := filepath.Join(tmpDir, entry.Name())
+				if os.RemoveAll(stalePath) == nil {
+					cleanedCount++
+				}
+			}
+		}
+		if cleanedCount > 0 {
+			log.Printf("Startup: Cleaned %d stale PacketReaper stream directories.", cleanedCount)
+		}
+	}
+}
+
+// shutdown is called when the app is terminating.
+// It ensures temporary stream directories are cleaned up gracefully.
+func (a *App) shutdown(ctx context.Context) {
+	log.Printf("=== PacketReaper Shutting Down ===")
+	if a.streamDir != "" {
+		err := os.RemoveAll(a.streamDir)
+		if err != nil {
+			log.Printf("Shutdown: Error cleaning up stream dir %s: %v", a.streamDir, err)
+		} else {
+			log.Printf("Shutdown: Successfully cleaned up stream dir: %s", a.streamDir)
+		}
+	}
 }
 
 // PcapResult holds the processing result

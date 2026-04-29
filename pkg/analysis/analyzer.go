@@ -231,7 +231,6 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 			}
 
 			session.PacketCount++
-			session.PacketCount++
 			session.ByteCount += int64(meta.Length)
 
 			// Update Payload Size

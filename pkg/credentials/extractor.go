@@ -1,6 +1,7 @@
 package credentials
 
 import (
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -45,17 +46,22 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 
 	var payload []byte
 	var srcPort, dstPort string
+	var srcPortInt, dstPortInt uint16
 
 	if tcpLayer != nil {
 		tcp, _ := tcpLayer.(*layers.TCP)
 		payload = tcp.Payload
 		srcPort = tcp.SrcPort.String()
 		dstPort = tcp.DstPort.String()
+		srcPortInt = uint16(tcp.SrcPort)
+		dstPortInt = uint16(tcp.DstPort)
 	} else if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
 		udp, _ := udpLayer.(*layers.UDP)
 		payload = udp.Payload
 		srcPort = udp.SrcPort.String()
 		dstPort = udp.DstPort.String()
+		srcPortInt = uint16(udp.SrcPort)
+		dstPortInt = uint16(udp.DstPort)
 	}
 
 	if len(payload) == 0 {
@@ -72,16 +78,16 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	}
 
 	// 2. FTP (Plaintext)
-	if strings.HasPrefix(payloadStr, "USER ") {
+	if strings.HasPrefix(payloadStr, "USER ") && (dstPortInt == 21 || srcPortInt == 21) {
 		user := strings.TrimSpace(strings.TrimPrefix(payloadStr, "USER "))
 		e.addCredential("FTP", srcIP, srcPort, dstIP, dstPort, user, "<pending>")
-	} else if strings.HasPrefix(payloadStr, "PASS ") {
+	} else if strings.HasPrefix(payloadStr, "PASS ") && (dstPortInt == 21 || srcPortInt == 21) {
 		pass := strings.TrimSpace(strings.TrimPrefix(payloadStr, "PASS "))
 		e.updateLastPassword("FTP", srcIP, dstIP, pass)
 	}
 
 	// 3. Telnet (very basic)
-	if strings.Contains(srcPort, "23") || strings.Contains(dstPort, "23") {
+	if srcPortInt == 23 || dstPortInt == 23 {
 		// Telnet captures are often character-by-character, tricky to capture nicely in a simple packet scan.
 		// We'll look for simple "login:" or "Password:" prompts if they appear in one key packet, creating a generic entry.
 		// For a real Telnet parser, stream reassembly is preferred.
@@ -89,17 +95,17 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	}
 
 	// 4. POP3
-	if strings.HasPrefix(payloadStr, "USER ") && (strings.Contains(dstPort, "110") || strings.Contains(srcPort, "110")) {
+	if strings.HasPrefix(payloadStr, "USER ") && (dstPortInt == 110 || srcPortInt == 110) {
 		user := strings.TrimSpace(strings.TrimPrefix(payloadStr, "USER "))
 		e.addCredential("POP3", srcIP, srcPort, dstIP, dstPort, user, "<pending>")
-	} else if strings.HasPrefix(payloadStr, "PASS ") && (strings.Contains(dstPort, "110") || strings.Contains(srcPort, "110")) {
+	} else if strings.HasPrefix(payloadStr, "PASS ") && (dstPortInt == 110 || srcPortInt == 110) {
 		pass := strings.TrimSpace(strings.TrimPrefix(payloadStr, "PASS "))
 		e.updateLastPassword("POP3", srcIP, dstIP, pass)
 	}
 
 	// 5. IMAP
 	// LOGIN <user> <pass>
-	if strings.Contains(dstPort, "143") || strings.Contains(srcPort, "143") {
+	if dstPortInt == 143 || srcPortInt == 143 {
 		lowerPayload := strings.ToLower(payloadStr)
 		if strings.Contains(lowerPayload, "login ") {
 			parts := strings.Fields(payloadStr)
@@ -115,7 +121,7 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	// 6. SMTP
 	// AUTH PLAIN <base64>
 	// AUTH LOGIN <base64>
-	if strings.Contains(dstPort, "25") || strings.Contains(srcPort, "25") || strings.Contains(dstPort, "587") || strings.Contains(srcPort, "587") {
+	if dstPortInt == 25 || srcPortInt == 25 || dstPortInt == 587 || srcPortInt == 587 {
 		if strings.Contains(payloadStr, "AUTH PLAIN ") {
 			b64 := strings.TrimSpace(strings.TrimPrefix(payloadStr, "AUTH PLAIN "))
 			decoded, err := base64.StdEncoding.DecodeString(b64)
@@ -132,8 +138,8 @@ func (e *Extractor) ScanPacket(packet gopacket.Packet) {
 	}
 
 	// 7. Kerberos (Port 88)
-	if strings.Contains(dstPort, "88") || strings.Contains(srcPort, "88") {
-		e.extractKerberos(payload, srcIP, srcPort, dstIP, dstPort)
+	if dstPortInt == 88 || srcPortInt == 88 {
+		e.extractKerberos(payload, srcIP, srcPort, dstIP, dstPort, tcpLayer != nil)
 	}
 }
 
@@ -183,37 +189,113 @@ func (e *Extractor) updateLastPassword(proto, client, server, pass string) {
 	}
 }
 
-func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPort string) {
-	// Very basic manual parsing for Kerberos AS-REQ
-	// Look for PVNO=5 (02 01 05) and MsgType=AS-REQ (10)
-	// hex: 02 01 05 ...
-	// AS-REQ tag is [APPLICATION 10] (6a)
+type krbASReq struct {
+	PVNO    int           `asn1:"explicit,tag:1"`
+	MsgType int           `asn1:"explicit,tag:2"`
+	PAData  []krbPAData   `asn1:"explicit,optional,tag:3"`
+	ReqBody asn1.RawValue `asn1:"explicit,tag:4"`
+}
 
-	if !strings.Contains(string(payload), "\x02\x01\x05") {
+type krbPAData struct {
+	Type  int    `asn1:"explicit,tag:1"`
+	Value []byte `asn1:"explicit,tag:2"`
+}
+
+type krbEncryptedData struct {
+	EType  int    `asn1:"explicit,tag:0"`
+	KVNO   int    `asn1:"explicit,optional,tag:1"`
+	Cipher []byte `asn1:"explicit,tag:2"`
+}
+
+type krbKDCReqBody struct {
+	KDCOptions asn1.BitString   `asn1:"explicit,tag:0"`
+	CName      krbPrincipalName `asn1:"explicit,optional,tag:1"`
+	Realm      string           `asn1:"generalstring,explicit,tag:2"`
+	// Use RawElements for the rest to avoid strict ASN.1 trailing data errors
+	RawElements []asn1.RawValue
+}
+
+type krbPrincipalName struct {
+	NameType   int      `asn1:"explicit,tag:0"`
+	NameString []string `asn1:"generalstring,explicit,tag:1"`
+}
+
+func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPort string, isTCP bool) {
+	if len(payload) == 0 {
 		return
 	}
 
-	// Attempt to find PA-DATA ENCTIMESTAMP (type 2)
-	// We are looking for the pattern: 30 (Sequence) ... 02 01 02 (Type 2) ... 04 (Octet String) ...
-	// Then inside Octet String, another Sequence with etype, cipher.
+	// 1. Normalize TCP Payload
+	if isTCP {
+		if len(payload) >= 4 {
+			length := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
+			if length <= uint32(len(payload)-4) {
+				payload = payload[4 : 4+length]
+			}
+		}
+	}
 
-	// Scan for PA-DATA type 2 (02 01 02)
+	// 2. Try ASN.1 strict parsing
+	var asReq krbASReq
+	_, err := asn1.UnmarshalWithParams(payload, &asReq, "application,tag:10")
+	if err == nil && asReq.PVNO == 5 && asReq.MsgType == 10 {
+		// Valid AS-REQ
+		e.parseKerberosASN1(asReq, srcIP, srcPort, dstIP, dstPort)
+		return
+	}
+
+	// 3. Fallback to heuristic parser if ASN.1 fails
+	// Note: We only run fallback if it might be an AS-REQ (e.g. contains 02 01 05)
+	if strings.Contains(string(payload), "\x02\x01\x05") {
+		e.extractKerberosHeuristic(payload, srcIP, srcPort, dstIP, dstPort)
+	}
+}
+
+func (e *Extractor) parseKerberosASN1(asReq krbASReq, srcIP, srcPort, dstIP, dstPort string) {
+	var encData krbEncryptedData
+	foundTimestamp := false
+
+	// Locate PA-DATA type 2
+	for _, pa := range asReq.PAData {
+		if pa.Type == 2 {
+			_, err := asn1.Unmarshal(pa.Value, &encData)
+			if err == nil {
+				foundTimestamp = true
+				break
+			}
+		}
+	}
+
+	if !foundTimestamp {
+		return
+	}
+
+	// Extract Realm and CName
+	var reqBody krbKDCReqBody
+	_, _ = asn1.Unmarshal(asReq.ReqBody.Bytes, &reqBody)
+
+	realm := reqBody.Realm
+	if realm == "" {
+		realm = "UNKNOWN"
+	}
+
+	username := "unknown"
+	if len(reqBody.CName.NameString) > 0 {
+		username = strings.Join(reqBody.CName.NameString, "")
+	}
+
+	userRealm := fmt.Sprintf("%s\\%s", realm, username)
+
+	hash := fmt.Sprintf("$krb5pa$%d$%s", encData.EType, hex.EncodeToString(encData.Cipher))
+	e.addCredential("Kerberos", srcIP, srcPort, dstIP, dstPort, userRealm, hash)
+}
+
+func (e *Extractor) extractKerberosHeuristic(payload []byte, srcIP, srcPort, dstIP, dstPort string) {
+	// Fallback heuristic extraction
 	padataType2Idx := strings.Index(string(payload), "\x02\x01\x02")
 	if padataType2Idx == -1 {
 		return
 	}
-
-	// This is a rough heuristic scanning to extract the hash.
-	// In a real robust parser, we would walk the ASN.1 tree.
-	// Format: $krb5pa$etype$user$realm$salt$hex_opt_timestamp
-
-	// 1. Find Realm and CName (Username)
-	// These are usually before the PA-DATA in the AS-REQ or after.
-	// Actually, for AS-REQ, they are in KDC-REQ-BODY.
-
-	// Let's try to extract string parts that look like user/domain.
-	// This is fuzzy but effective for a "Reaper".
-	// We'll search for visible strings.
 
 	cleanStrings := func(data []byte) []string {
 		var extracted []string
@@ -233,27 +315,11 @@ func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPo
 
 	strs := cleanStrings(payload)
 
-	// Heuristic: Last standard strings are often realm and user.
-	// Real implementation should parse ASN.1.
-	// However, for the hash, we need the raw bytes of the cipher.
-
-	// Search for the EncryptedData
-	// Sequence (30) length (..) Etype (A0/A1 or 02 01 ..)
-	// Let's look for etype 23 (RC4) or 18 (AES256)
-
-	// Etype 23: 02 01 17
-	// Etype 18: 02 01 12
-	// Etype 17: 02 01 11
-
 	var etype int
 	var cipher []byte
 
 	if idx := strings.Index(string(payload), "\x02\x01\x12"); idx != -1 { // 18 AES256
 		etype = 18
-		// The cipher follows in an octet string (04)
-		// 02 01 12 (Integer 18)
-		// [Opt KVNO]
-		// 04 (Octet String) [Len] [Bytes]
 		cipher = extractOctetString(payload, idx+3)
 	} else if idx := strings.Index(string(payload), "\x02\x01\x17"); idx != -1 { // 23 RC4
 		etype = 23
@@ -264,19 +330,11 @@ func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPo
 	}
 
 	if etype != 0 && len(cipher) > 0 {
-		// Construct a hash format
-		// User/Realm is tricky without full ASN.1.
-		// We'll use the strings found as a best effort "Username"
-
 		userRealm := "unknown"
 		if len(strs) > 0 {
-			// Refined Heuristic:
-			// 1. Filter out strings that look like pure numbers or garbage
 			var candidates []string
 			for _, s := range strs {
-				// Filter out Kerberos timestamps (GeneralizedTime: YYYYMMDDHHMMSSZ)
 				if len(s) == 15 && s[len(s)-1] == 'Z' && s[0] == '2' {
-					// Check if all others are digits
 					isTime := true
 					for i := 0; i < 14; i++ {
 						if s[i] < '0' || s[i] > '9' {
@@ -289,8 +347,6 @@ func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPo
 					}
 				}
 
-				// Strict whitelist validation
-				// Allow: a-z, A-Z, 0-9, ., -, _, $, @
 				valid := true
 				hasLetter := false
 				hasLower := false
@@ -304,23 +360,17 @@ func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPo
 						hasLetter = true
 						hasUpper = true
 					} else if r >= '0' && r <= '9' {
-						// digit
 					} else if r == '.' || r == '-' || r == '_' || r == '$' || r == '@' {
-						// special
 					} else {
-						// If we get here, it's an invalid char
 						valid = false
 						break
 					}
 				}
 
-				// Skip if invalid or has no letters (e.g. "123")
-				// Length < 3 is also usually noise
 				if !valid || !hasLetter || len(s) < 3 {
 					continue
 				}
 
-				// Casing Heuristic:
 				isMixed := hasLower && hasUpper
 				if isMixed && !strings.Contains(s, ".") && !strings.Contains(s, "-") {
 					continue
@@ -329,7 +379,6 @@ func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPo
 				candidates = append(candidates, s)
 			}
 
-			// 2. Take the last two valid candidates if available
 			if len(candidates) >= 2 {
 				c1 := candidates[len(candidates)-2]
 				c2 := candidates[len(candidates)-1]
@@ -355,13 +404,11 @@ func (e *Extractor) extractKerberos(payload []byte, srcIP, srcPort, dstIP, dstPo
 }
 
 func extractOctetString(data []byte, after int) []byte {
-	// Look for next 0x04 tag
 	start := after
 	if start >= len(data) {
 		return nil
 	}
 
-	// limited search forward
 	limit := start + 20
 	if limit > len(data) {
 		limit = len(data)
@@ -369,45 +416,25 @@ func extractOctetString(data []byte, after int) []byte {
 
 	for i := start; i < limit; i++ {
 		if data[i] == 0x04 {
-			// Found Octet String
-			// Next byte is length (assuming short form < 128 for simplistic logic, or long form)
 			if i+1 >= len(data) {
 				return nil
 			}
 			length := int(data[i+1])
 
 			contentStart := i + 2
-			// Handle long form length if needed (high bit set)
 			if length > 127 {
 				lenBytes := length & 0x7F
 				if i+2+lenBytes > len(data) {
 					return nil
 				}
-				// simplify: just skip length bytes logic for now or implement properly
-				// For this hack, let's assume standard short packets or handle 1-byte extra
-				// A proper ASN.1 reader is better.
-
-				// Fallback: Just grab a chunk
 				contentStart = i + 2 + lenBytes
-				// Re-read length strictly?
-				// Let's just create a "good enough for the ctf" extractor.
-				length = 0 // reset because we aren't parsing long form size bytes here
-				// But wait, if we don't parse length, we don't know how much to grab.
-				// Let's assume the earlier check found the etype right before the cipher.
+				length = 0
 			}
 
-			// If short length
 			if length > 0 && contentStart+length <= len(data) {
 				return data[contentStart : contentStart+length]
 			}
-
-			// If long length or we bailed, try to just grab until end or reasonable size?
-			// The screenshot shows a very long hash.
-			// Let's try to grab till end of packet or next sequence end?
-			// Actually, for the purpose of this task, let's look at the "strings" approach.
-			// The 0x04 tag is reliable.
-
-			return data[contentStart:] // Danger: returns too much?
+			return data[contentStart:]
 		}
 	}
 	return nil

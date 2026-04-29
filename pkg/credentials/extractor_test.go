@@ -121,3 +121,51 @@ func TestExtractor_Synth_Protocols(t *testing.T) {
 		t.Error("Failed to find SMTP creds")
 	}
 }
+
+func TestExtractor_Kerberos_Synthetic(t *testing.T) {
+	extractor := NewExtractor()
+
+	createTCPPacket := func(srcPort, dstPort int, payload []byte) gopacket.Packet {
+		eth := &layers.Ethernet{SrcMAC: []byte{0, 0, 0, 0, 0, 1}, DstMAC: []byte{0, 0, 0, 0, 0, 2}, EthernetType: layers.EthernetTypeIPv4}
+		ip := &layers.IPv4{Version: 4, IHL: 5, SrcIP: []byte{10, 0, 0, 1}, DstIP: []byte{10, 0, 0, 2}, Protocol: layers.IPProtocolTCP}
+		tcp := &layers.TCP{SrcPort: layers.TCPPort(srcPort), DstPort: layers.TCPPort(dstPort)}
+		tcp.SetNetworkLayerForChecksum(ip)
+		buf := gopacket.NewSerializeBuffer()
+		opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+		gopacket.SerializeLayers(buf, opts, eth, ip, tcp, gopacket.Payload(payload))
+		return gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	}
+
+	// 2. TCP payload shorter than 4 bytes
+	extractor.ScanPacket(createTCPPacket(12345, 88, []byte{0x00, 0x00, 0x00}))
+	if len(extractor.Credentials) != 0 {
+		t.Error("Expected 0 creds for short TCP payload")
+	}
+
+	// 3. Port 8088 or 1883 traffic
+	extractor.ScanPacket(createTCPPacket(12345, 8088, []byte("\x6a\x43\x30\x41"))) // Dummy valid-looking kerberos start
+	extractor.ScanPacket(createTCPPacket(12345, 1883, []byte("\x6a\x43\x30\x41")))
+	if len(extractor.Credentials) != 0 {
+		t.Error("Expected 0 creds for non-88 ports")
+	}
+
+	// 4. Test Exact Numeric Matching (No Substring False Positives)
+	// Telnet false positive (23 in 12323)
+	extractor.ScanPacket(createTCPPacket(12345, 12323, []byte("login: falsepositive")))
+	
+	// FTP false positive (21 in 2100)
+	extractor.ScanPacket(createTCPPacket(12345, 2100, []byte("USER ftpuser")))
+	
+	// POP3 false positive (110 in 25110)
+	extractor.ScanPacket(createTCPPacket(12345, 25110, []byte("USER popuser")))
+	
+	// IMAP false positive (143 in 1433)
+	extractor.ScanPacket(createTCPPacket(12345, 1433, []byte("TAG1 LOGIN imapuser imappass")))
+	
+	// SMTP false positive (25 in 2525)
+	extractor.ScanPacket(createTCPPacket(12345, 2525, []byte("AUTH PLAIN YXV0aHVzZXIAYXV0aHVzZXIAYXV0aHBhc3M=")))
+
+	if len(extractor.Credentials) != 0 {
+		t.Errorf("Expected 0 creds for substring port matches, got %d", len(extractor.Credentials))
+	}
+}

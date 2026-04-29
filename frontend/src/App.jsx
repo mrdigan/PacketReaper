@@ -127,10 +127,9 @@ function App() {
         });
     }
 
-    // --- Helper to link Anomaly -> Session ---
     // --- Helper to link Record -> Session ---
-    const handleStreamLink = (record) => {
-        if (!result || !result.sessions) return;
+    const findMatchingSession = (record, sessions) => {
+        if (!sessions || sessions.length === 0) return null;
 
         let srcIP, srcPort, dstIP, dstPort, proto;
 
@@ -138,74 +137,98 @@ function App() {
         if (record.protocol && record.client_ip) {
             // Credential
             srcIP = record.client_ip;
-            srcPort = parseInt(record.client_port);
+            srcPort = parseInt(record.client_port) || 0;
             dstIP = record.server_ip;
-            dstPort = parseInt(record.server_port);
-            proto = record.protocol === "HTTP" || record.protocol === "FTP" || record.protocol === "SMTP" || record.protocol === "POP3" || record.protocol === "IMAP" ? "TCP" : record.protocol;
-            if (record.protocol === "Kerberos") proto = "UDP"; // Usually UDP for extraction check? Actually Kerberos can be TCP. Let's try flexible match.
+            dstPort = parseInt(record.server_port) || 0;
+            proto = record.protocol;
         } else if (record.method) {
             // HTTP Transaction (Browsing History)
             srcIP = record.src_ip;
-            srcPort = record.src_port;
+            srcPort = record.src_port || 0;
             dstIP = record.dst_ip;
-            dstPort = record.dst_port;
+            dstPort = record.dst_port || 0;
             proto = "TCP";
         } else if (record.severity && record.source_ip) {
             // Anomaly
             srcIP = record.source_ip;
-            srcPort = record.source_port;
+            srcPort = record.source_port || 0;
             dstIP = record.dest_ip;
-            dstPort = record.dest_port;
+            dstPort = record.dest_port || 0;
             proto = record.protocol;
         } else if (record.filename && record.source_ip) {
             // File or Image
-            // Clean IP if it has Ref
-            srcIP = record.source_ip.split(' ')[0];
-            srcPort = record.source_port;
-            dstIP = record.dest_ip || ""; // Images might not have dest_ip in my update? I added dest_port but did I add dest_ip to ImageInfo? 
-            // Checked app.go: ImageInfo has SourceIP, SourcePort, DestPort. Lacks DestIP? 
-            // Wait, I missed DestIP in ImageInfo! 
-            // Let's assume FileDetail has it.
-            // For ImageInfo, I might have messed up.
-            dstPort = record.dest_port;
-            proto = "TCP";
-
-            // Re-check ImageInfo in app.go... I didn't add DestIP. 
-            // Use SourceIP/Port and find session with *some* DestIP? 
-            // Or just fail for images if I don't fix app.go.
-            // Let's apply fix for Files first fully.
+            srcIP = record.source_ip.split(' ')[0]; // Handle refs like "192.168.1.1 (Server)"
+            srcPort = record.source_port || 0;
+            dstIP = record.dest_ip ? record.dest_ip.split(' ')[0] : "";
+            dstPort = record.dest_port || 0;
+            proto = "TCP"; // Most files/images extracted over TCP protocols
+        } else if (record.key && record.src_ip && record.packet_count !== undefined) {
+             // It's already a session object
+             return record;
         } else {
-            // Fallback or unknown
-            return;
+            // Unknown record type
+            return null;
         }
 
-        // Normalize protocol
-        // If proto is "HTTP", map to TCP for session lookup
-        if (["HTTP", "FTP", "SMTP", "POP3", "IMAP"].includes(proto)) proto = "TCP";
+        // Protocol Normalization
+        let mappedProtos = [];
+        const protoUpper = proto ? proto.toUpperCase() : "";
+        if (["HTTP", "FTP", "SMTP", "POP3", "IMAP", "TLS", "SSL"].includes(protoUpper)) {
+            mappedProtos = ["TCP"];
+        } else if (protoUpper === "DNS" || protoUpper === "KERBEROS") {
+            mappedProtos = ["UDP", "TCP"];
+        } else if (protoUpper) {
+            mappedProtos = [protoUpper];
+        }
 
-        // Find session
-        const session = result.sessions.find(s => {
-            // Flexible protocol match if proto is undefined/null
-            const pMatch = !proto || (s.protocol === proto) || (proto === "UDP" && s.protocol === "UDP") || (proto === "TCP" && s.protocol === "TCP");
+        let bestMatch = null;
+        let highestScore = -1;
 
-            // Check bidirectional match
-            const forward = s.src_ip === srcIP && s.src_port === srcPort && (!dstIP || s.dst_ip === dstIP) && (!dstPort || s.dst_port === dstPort) && pMatch;
-            const reverse = s.src_ip === dstIP && s.src_port === dstPort && (!dstIP || s.dst_ip === srcIP) && (!dstPort || s.src_port === srcPort) && pMatch; // dst_port check on reverse src_port? Wait.
+        for (const s of sessions) {
+            // Check protocol compatibility
+            const protocolMatches = mappedProtos.length === 0 || mappedProtos.includes(s.protocol);
+            if (!protocolMatches && protoUpper !== "") continue; // Skip if protocol definitely mismatches
 
-            // Correct logic:
-            // Forward: Session(Src) == Record(Src) && Session(Dst) == Record(Dst)
-            // Reverse: Session(Src) == Record(Dst) && Session(Dst) == Record(Src)
+            // Calculate forward and reverse matches
+            const isSrcIPMatch = (s.src_ip === srcIP);
+            const isDstIPMatch = (!dstIP || s.dst_ip === dstIP);
+            const isSrcPortMatch = (!srcPort || s.src_port === srcPort);
+            const isDstPortMatch = (!dstPort || s.dst_port === dstPort);
 
-            const matchFwd = (s.src_ip === srcIP && s.src_port === srcPort) &&
-                (!dstIP || s.dst_ip === dstIP) &&
-                (!dstPort || s.dst_port === dstPort);
+            const isRevSrcIPMatch = (s.src_ip === dstIP);
+            const isRevDstIPMatch = (!srcIP || s.dst_ip === srcIP);
+            const isRevSrcPortMatch = (!dstPort || s.src_port === dstPort);
+            const isRevDstPortMatch = (!srcPort || s.dst_port === srcPort);
 
-            const matchRev = (s.src_ip === dstIP && s.src_port === dstPort) &&
-                (!dstIP || s.dst_ip === srcIP) &&
-                (!dstPort || s.dst_port === srcPort); // Wait, Session Dst Port should match Record Src Port? Yes.
+            const forwardMatch = isSrcIPMatch && isDstIPMatch && isSrcPortMatch && isDstPortMatch;
+            const reverseMatch = isRevSrcIPMatch && isRevDstIPMatch && isRevSrcPortMatch && isRevDstPortMatch;
 
-            return (matchFwd || matchRev) && pMatch;
-        });
+            if (forwardMatch || reverseMatch) {
+                // Scoring
+                let score = 0;
+                
+                if (srcIP && dstIP && srcPort && dstPort && protocolMatches) {
+                    score = 3; // Exact full match
+                } else if (srcIP && srcPort && (dstIP || dstPort)) {
+                    score = 2; // Partial strict match
+                } else {
+                    score = 1; // Loose match
+                }
+
+                if (score > highestScore) {
+                    highestScore = score;
+                    bestMatch = s;
+                }
+            }
+        }
+
+        return bestMatch;
+    };
+
+    const handleStreamLink = (record) => {
+        if (!result || !result.sessions) return;
+
+        const session = findMatchingSession(record, result.sessions);
 
         if (session) {
             setStreamSession(session);
@@ -214,7 +237,7 @@ function App() {
             setShowToast(true);
             setTimeout(() => setShowToast(false), 3000);
         }
-    }
+    };
 
     // --- Tab Rendering Logic ---
     const renderContent = () => {
