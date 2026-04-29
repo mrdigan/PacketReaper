@@ -279,13 +279,11 @@ func (a *App) ProcessPcapFile(filename string, keywordsList []string) PcapResult
 		a.streamMu.Lock()
 		defer a.streamMu.Unlock()
 
-		// Determine file path — use a hash of the streamID as the filename so that
-		// IPv6 addresses (which contain colons, invalid on Windows) never appear in paths.
+		// Determine file path — use safeStreamID() to produce a Windows-safe hashed filename.
+		// Stream IDs may contain raw IPv6 addresses with colons, which are invalid in Windows paths.
 		filePath, exists := a.streamFiles[streamID]
 		if !exists {
-			hashBytes := crypto_md5.Sum([]byte(streamID))
-			safeFilename := hex.EncodeToString(hashBytes[:]) + ".bin"
-			filePath = filepath.Join(a.streamDir, safeFilename)
+			filePath = filepath.Join(a.streamDir, safeStreamID(streamID)+".bin")
 			a.streamFiles[streamID] = filePath
 		}
 
@@ -582,9 +580,13 @@ func safeStreamID(streamID string) string {
 }
 
 // GetStreamContent retrieves the conversation for a session.
-// sessionKey format from Analyzer: "IP:Port-IP:Port-Proto" e.g. "192.168.1.5:49812-10.0.0.1:80-TCP"
-// For IPv6, format is: "[2001:db8::1]:80-[2001:db8::2]:443-TCP" but the frontend currently passes
-// the raw key string. We resolve the stream by matching structured session fields where possible.
+// sessionKey format produced by analyzer.go: "SrcIP:SrcPort-DstIP:DstPort-Proto"
+// Examples:
+//   IPv4: "192.168.1.5:49812-10.0.0.1:80-TCP"
+//   IPv6: "2001:db8::1:49812-2001:db8::2:80-TCP"  (no brackets; port is last colon segment)
+//
+// Because IPv6 addresses themselves contain colons, naive string splitting on "-" or ":" is
+// not safe. GetStreamContent uses a port-boundary scan to locate the endpoint separator.
 func (a *App) GetStreamContent(sessionKey string) StreamData {
 	a.streamMu.RLock()
 	defer a.streamMu.RUnlock()

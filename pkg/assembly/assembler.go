@@ -90,18 +90,21 @@ func (sa *StreamAssembler) AssemblePacket(packet gopacket.Packet) {
 	payload := ep.Payload
 
 	// Build [16]byte keys from the string IPs.
-	// Guard nil from ParseIP and To16() to prevent panic on malformed endpoints.
+	// Guard nil from ParseIP and To16() to prevent panic and avoid creating zero-value stream keys
+	// that would collapse all malformed-endpoint traffic into the same bucket.
+	srcIPParsed := net.ParseIP(ep.SrcIP)
+	dstIPParsed := net.ParseIP(ep.DstIP)
+	if srcIPParsed == nil || dstIPParsed == nil {
+		return // Fail closed: do not create a stream with a zero-value key
+	}
+	srcIP16 := srcIPParsed.To16()
+	dstIP16 := dstIPParsed.To16()
+	if srcIP16 == nil || dstIP16 == nil {
+		return // Fail closed: To16 should not fail on a valid IP, but guard anyway
+	}
 	var key streamKey
-	if ip := net.ParseIP(ep.SrcIP); ip != nil {
-		if b := ip.To16(); b != nil {
-			copy(key.srcIP[:], b)
-		}
-	}
-	if ip := net.ParseIP(ep.DstIP); ip != nil {
-		if b := ip.To16(); b != nil {
-			copy(key.dstIP[:], b)
-		}
-	}
+	copy(key.srcIP[:], srcIP16)
+	copy(key.dstIP[:], dstIP16)
 	key.srcPort = srcPort
 	key.dstPort = dstPort
 
@@ -407,11 +410,16 @@ func (sa *StreamAssembler) identifyAndWrite(stream *Stream) bool {
 		sPort := int(stream.SrcPort)
 		dPort := int(stream.DstPort)
 
+		// Compute the final extension from the resolved filename.
+		// The local `extension` variable may still be empty when the filename was recovered
+		// from Content-Disposition or URL (HTTP path), so we always derive from filename here.
+		finalExt := strings.ToLower(filepath.Ext(filename))
+
 		// Only store PreviewBytes for image types that need in-memory preview rendering.
 		// Non-image files keep metadata and hashes only, avoiding large allocations.
 		const maxImagePreviewBytes = 5 * 1024 * 1024 // 5 MB cap per image preview
 		var previewBytes []byte
-		if extension == ".jpg" || extension == ".jpeg" || extension == ".png" || extension == ".gif" {
+		if finalExt == ".jpg" || finalExt == ".jpeg" || finalExt == ".png" || finalExt == ".gif" {
 			if int64(len(fileData)) <= maxImagePreviewBytes {
 				previewBytes = fileData
 			}
