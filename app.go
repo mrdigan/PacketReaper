@@ -16,7 +16,7 @@ import (
 	"PacketReaper/pkg/pcap"
 	"PacketReaper/pkg/voip"
 	"context"
-	"crypto/md5"
+	crypto_md5 "crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -208,7 +208,7 @@ func (a *App) ProcessPcapFile(filename string, keywordsList []string) PcapResult
 	if err != nil {
 		return PcapResult{Message: fmt.Sprintf("Error opening file for hashing: %v", err)}
 	}
-	hasher := md5.New()
+	hasher := crypto_md5.New()
 	if _, err := io.Copy(hasher, f); err != nil {
 		f.Close()
 		return PcapResult{Message: fmt.Sprintf("Error hashing file: %v", err)}
@@ -279,10 +279,13 @@ func (a *App) ProcessPcapFile(filename string, keywordsList []string) PcapResult
 		a.streamMu.Lock()
 		defer a.streamMu.Unlock()
 
-		// Determine file path
+		// Determine file path — use a hash of the streamID as the filename so that
+		// IPv6 addresses (which contain colons, invalid on Windows) never appear in paths.
 		filePath, exists := a.streamFiles[streamID]
 		if !exists {
-			filePath = filepath.Join(a.streamDir, streamID+".bin")
+			hashBytes := crypto_md5.Sum([]byte(streamID))
+			safeFilename := hex.EncodeToString(hashBytes[:]) + ".bin"
+			filePath = filepath.Join(a.streamDir, safeFilename)
 			a.streamFiles[streamID] = filePath
 		}
 
@@ -406,21 +409,10 @@ func (a *App) ProcessPcapFile(filename string, keywordsList []string) PcapResult
 	log.Printf("Scanning assembled streams for certificates...")
 	streams := assembler.GetAllStreams()
 	for _, stream := range streams {
-		var srcP, dstP int
-		var sIP, dIP string
-		// Try to parse from ID which is reliable
-		fmt.Sscanf(stream.ID, "%s_%d-%s_%d", &sIP, &srcP, &dIP, &dstP)
+		// Use port fields directly from the Stream struct.
+		// Do not parse stream.ID — it is not safe for IPv6 (addresses contain colons).
+		dstP := int(stream.DstPort)
 
-		// If we have a file on disk for this stream, use it!
-		// The 4KB buffer in stream.Data might be enough for ClientHello, but ServerHello+Certificate often exceeds 4KB.
-		// So we prefer reading the temp file.
-
-		// Map stream ID to temp file
-		// Stream IDs in assembler: "IP_Port-IP_Port" (underscores) or as formatted in Sscanf above?
-		// Wait, assembler uses: fmt.Sprintf("%s_%d-%s_%d", ip.SrcIP, srcPort, ip.DstIP, dstPort) -> 1.2.3.4_80-5.6.7.8_443
-		// App.go StreamFiles uses: "1.2.3.4_80-5.6.7.8_443" (same format, via toAssemblerFormat logic)
-
-		// Note: assembler.go stores ID as "SrcIP_SrcPort-DstIP_DstPort"
 		streamID := stream.ID
 		tempFile, exists := a.streamFiles[streamID]
 
@@ -582,35 +574,98 @@ func (a *App) LoadPrivateKey() (string, error) {
 	return "Key Loaded Successfully", nil
 }
 
-// GetStreamContent retrieves the conversation for a session
+// safeStreamID returns an MD5 hash of the given stream ID, used as a Windows-safe filename.
+// Stream IDs may contain IPv6 addresses with colons, which are invalid in Windows filenames.
+func safeStreamID(streamID string) string {
+	h := crypto_md5.Sum([]byte(streamID))
+	return hex.EncodeToString(h[:])
+}
+
+// GetStreamContent retrieves the conversation for a session.
 // sessionKey format from Analyzer: "IP:Port-IP:Port-Proto" e.g. "192.168.1.5:49812-10.0.0.1:80-TCP"
+// For IPv6, format is: "[2001:db8::1]:80-[2001:db8::2]:443-TCP" but the frontend currently passes
+// the raw key string. We resolve the stream by matching structured session fields where possible.
 func (a *App) GetStreamContent(sessionKey string) StreamData {
 	a.streamMu.RLock()
 	defer a.streamMu.RUnlock()
 
 	result := StreamData{Inbound: "", Outbound: ""}
 
-	// 1. Parse Session Key
-	parts := strings.Split(sessionKey, "-")
-	if len(parts) < 3 {
+	// Parse the session key into its components.
+	// Format produced by analyzer.go: "SrcIP:SrcPort-DstIP:DstPort-Proto"
+	// Because IPv6 addresses contain colons, we cannot naively split on "-".
+	// Strategy: strip the protocol suffix first (always last "-Proto" segment),
+	// then split the remainder on the middle "-" using the known port-number positions.
+	//
+	// Safe split approach: find the LAST occurrence of "-" (the protocol),
+	// then find the middle separator between the two endpoints.
+	// Endpoint format is either:
+	//   IPv4: "1.2.3.4:80"
+	//   IPv6: "2001:db8::1:80"  <-- port is the LAST colon-delimited segment
+	//
+	// The assembler stream ID format is: "SrcIP_SrcPort-DstIP_DstPort"
+	// So we reconstruct the assembler key from parsed IP/port strings.
+
+	// Step 1: strip protocol suffix
+	lastDash := strings.LastIndex(sessionKey, "-")
+	if lastDash < 0 {
 		return result
 	}
-	// source: IP:Port, dest: IP:Port
-	srcPart := parts[0] // 192.168.1.5:49812
-	dstPart := parts[1] // 10.0.0.1:80
+	endpoints := sessionKey[:lastDash] // everything before the last "-Proto"
 
-	// Helper to convert IP:Port to Assembler ID format IP_Port
-	toAssemblerFormat := func(ipPort string) string {
-		return strings.Replace(ipPort, ":", "_", 1)
+	// Step 2: split endpoints at their midpoint.
+	// The analyzer formats them as "SrcIP:SrcPort-DstIP:DstPort".
+	// For IPv4:  "192.168.1.1:80-10.0.0.1:443"
+	// For IPv6:  "2001:db8::1:80-2001:db8::2:443"
+	// The separator between src and dst is the "-" that follows a port number (digits).
+	// We find it by scanning for a "-" preceded by a digit sequence after the first colon.
+	//
+	// Simplest safe strategy: scan forward to find the "-" that separates the two endpoints
+	// by looking for the first "-" that follows a pure-digit run (port number).
+	sepIdx := -1
+	for i := 1; i < len(endpoints); i++ {
+		if endpoints[i] == '-' {
+			// Check that chars immediately before this '-' are all digits (port number)
+			j := i - 1
+			for j >= 0 && endpoints[j] >= '0' && endpoints[j] <= '9' {
+				j--
+			}
+			// j now points to the char before the digit run
+			// There must be at least one digit, and the char before the digit run must be ':'
+			if j < i-1 && j >= 0 && endpoints[j] == ':' {
+				sepIdx = i
+				break
+			}
+		}
+	}
+	if sepIdx < 0 {
+		return result
 	}
 
-	// The StreamAssembler stores streams as "Src_Port-Dst_Port"
-	// We need to look up both directions: A->B and B->A
+	srcEndpoint := endpoints[:sepIdx]   // "SrcIP:SrcPort"
+	dstEndpoint := endpoints[sepIdx+1:] // "DstIP:DstPort"
 
-	// Forward: Src->Dst
-	id1 := fmt.Sprintf("%s-%s", toAssemblerFormat(srcPart), toAssemblerFormat(dstPart))
-	// Reverse: Dst->Src
-	id2 := fmt.Sprintf("%s-%s", toAssemblerFormat(dstPart), toAssemblerFormat(srcPart))
+	// Step 3: Extract IP and port from each endpoint string.
+	// Port is the last colon-delimited segment.
+	extractIPPort := func(ep string) (string, string) {
+		idx := strings.LastIndex(ep, ":")
+		if idx < 0 {
+			return ep, ""
+		}
+		return ep[:idx], ep[idx+1:]
+	}
+
+	srcIP, srcPortStr := extractIPPort(srcEndpoint)
+	dstIP, dstPortStr := extractIPPort(dstEndpoint)
+
+	// Step 4: Build assembler stream IDs (format: "IP_Port-IP_Port").
+	// Use IP and port directly — no colon-replacement, no naive splitting.
+	makeAssemblerID := func(ip1, port1, ip2, port2 string) string {
+		return fmt.Sprintf("%s_%s-%s_%s", ip1, port1, ip2, port2)
+	}
+
+	id1 := makeAssemblerID(srcIP, srcPortStr, dstIP, dstPortStr) // Src->Dst
+	id2 := makeAssemblerID(dstIP, dstPortStr, srcIP, srcPortStr) // Dst->Src
 
 	readStreamFile := func(id string) string {
 		path, ok := a.streamFiles[id]
@@ -624,13 +679,12 @@ func (a *App) GetStreamContent(sessionKey string) StreamData {
 		}
 		defer f.Close()
 
-		// Limit readahead to prevent UI freeze (e.g. 50KB)
+		// Limit readahead to prevent UI freeze (50KB)
 		limit := int64(50 * 1024)
 		buf := make([]byte, limit)
 		n, _ := f.Read(buf)
 
-		// Sanitize output (replace non-printables with dot)
-		// Similar to Wireshark's ASCII view
+		// Sanitize output (replace non-printables with dot, like Wireshark ASCII view)
 		cleanBuf := make([]byte, n)
 		for i := 0; i < n; i++ {
 			b := buf[i]
@@ -648,8 +702,8 @@ func (a *App) GetStreamContent(sessionKey string) StreamData {
 		return content
 	}
 
-	result.Outbound = readStreamFile(id1) // Src -> Dst
-	result.Inbound = readStreamFile(id2)  // Dst -> Src
+	result.Outbound = readStreamFile(id1) // Src->Dst
+	result.Inbound = readStreamFile(id2)  // Dst->Src
 
 	return result
 }

@@ -54,11 +54,13 @@ type streamKey struct {
 	dstPort uint16
 }
 
-// Stream represents a TCP stream (simplified)
+// Stream represents a TCP/UDP stream (simplified)
 type Stream struct {
-	ID          string // Kept as string for display/logging
+	ID          string // Human-readable ID for display/logging
 	SrcIP       string
 	DstIP       string
+	SrcPort     uint16
+	DstPort     uint16
 	PacketCount int
 	Data        []byte
 }
@@ -87,13 +89,18 @@ func (sa *StreamAssembler) AssemblePacket(packet gopacket.Packet) {
 	dstPort := ep.DstPort
 	payload := ep.Payload
 
-	// Build [16]byte keys from the string IPs
+	// Build [16]byte keys from the string IPs.
+	// Guard nil from ParseIP and To16() to prevent panic on malformed endpoints.
 	var key streamKey
 	if ip := net.ParseIP(ep.SrcIP); ip != nil {
-		copy(key.srcIP[:], ip.To16())
+		if b := ip.To16(); b != nil {
+			copy(key.srcIP[:], b)
+		}
 	}
 	if ip := net.ParseIP(ep.DstIP); ip != nil {
-		copy(key.dstIP[:], ip.To16())
+		if b := ip.To16(); b != nil {
+			copy(key.dstIP[:], b)
+		}
 	}
 	key.srcPort = srcPort
 	key.dstPort = dstPort
@@ -106,9 +113,11 @@ func (sa *StreamAssembler) AssemblePacket(packet gopacket.Packet) {
 		// Only allocate string ID when creating new stream
 		strKey := fmt.Sprintf("%s_%d-%s_%d", ep.SrcIP, srcPort, ep.DstIP, dstPort)
 		stream = &Stream{
-			ID:    strKey,
-			SrcIP: ep.SrcIP,
-			DstIP: ep.DstIP,
+			ID:      strKey,
+			SrcIP:   ep.SrcIP,
+			DstIP:   ep.DstIP,
+			SrcPort: srcPort,
+			DstPort: dstPort,
 		}
 		sa.Streams[key] = stream
 	}
@@ -393,19 +402,18 @@ func (sa *StreamAssembler) identifyAndWrite(stream *Stream) bool {
 			displaySource = fmt.Sprintf("%s (%s)", stream.SrcIP, sourceRef)
 		}
 
-		// Parse ports from Stream ID
-		// Format: SrcIP_SrcPort-DstIP_DstPort
-		var sPort, dPort int
-		// Replace _ with space for Sscanf (easier than splitting if we trust format)
-		// Or just split.
-		// ID: 1.2.3.4_123-5.6.7.8_456
-		idParts := strings.Split(stream.ID, "-")
-		if len(idParts) == 2 {
-			p1 := strings.Split(idParts[0], "_")
-			p2 := strings.Split(idParts[1], "_")
-			if len(p1) == 2 && len(p2) == 2 {
-				fmt.Sscanf(p1[1], "%d", &sPort)
-				fmt.Sscanf(p2[1], "%d", &dPort)
+		// Use the port fields stored on the Stream struct directly.
+		// Avoids parsing stream.ID, which is unsafe for IPv6 (addresses contain colons/underscores).
+		sPort := int(stream.SrcPort)
+		dPort := int(stream.DstPort)
+
+		// Only store PreviewBytes for image types that need in-memory preview rendering.
+		// Non-image files keep metadata and hashes only, avoiding large allocations.
+		const maxImagePreviewBytes = 5 * 1024 * 1024 // 5 MB cap per image preview
+		var previewBytes []byte
+		if extension == ".jpg" || extension == ".jpeg" || extension == ".png" || extension == ".gif" {
+			if int64(len(fileData)) <= maxImagePreviewBytes {
+				previewBytes = fileData
 			}
 		}
 
@@ -424,7 +432,7 @@ func (sa *StreamAssembler) identifyAndWrite(stream *Stream) bool {
 			IsExtractedArtifact: true,
 			WrittenToDisk:       writtenToDisk,
 			RiskNote:            riskNote,
-			PreviewBytes:        fileData,
+			PreviewBytes:        previewBytes,
 		})
 		return true
 	}

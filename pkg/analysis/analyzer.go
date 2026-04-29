@@ -179,12 +179,21 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 
 	// Update Session (Flow)
 	if protocol != "" {
-		// Use net.IP.To16() so both IPv4 and IPv6 fit in [16]byte for map key comparison
-		ip1Raw := net.ParseIP(ep.SrcIP).To16()
-		ip2Raw := net.ParseIP(ep.DstIP).To16()
+		// Use net.IP.To16() so both IPv4 and IPv6 fit in [16]byte for map key comparison.
+		// Guard against nil in case packetutils returns an unexpected empty IP string.
+		ip1Raw := net.ParseIP(ep.SrcIP)
+		ip2Raw := net.ParseIP(ep.DstIP)
+		if ip1Raw == nil || ip2Raw == nil {
+			goto hostTracking
+		}
+		ip1Raw16 := ip1Raw.To16()
+		ip2Raw16 := ip2Raw.To16()
+		if ip1Raw16 == nil || ip2Raw16 == nil {
+			goto hostTracking
+		}
 		var ip1, ip2 [16]byte
-		copy(ip1[:], ip1Raw)
-		copy(ip2[:], ip2Raw)
+		copy(ip1[:], ip1Raw16)
+		copy(ip2[:], ip2Raw16)
 		p1 := uint16(srcPort)
 		p2 := uint16(dstPort)
 
@@ -280,6 +289,7 @@ func (a *Analyzer) AnalyzePacket(packet gopacket.Packet) {
 		}
 	}
 
+hostTracking:
 	// Host Analysis (Sender/Receiver Stats)
 	sender := a.getHost(ep.SrcIP)
 	sender.PacketsSent++
