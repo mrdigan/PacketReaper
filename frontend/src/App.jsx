@@ -397,6 +397,13 @@ function App() {
                             { header: 'Type', accessor: 'extension', render: (row) => <span className="text-xs uppercase bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 rounded text-gray-800 dark:text-gray-300">{row.extension}</span> },
                             { header: 'Size', accessor: 'size', render: (row) => <span className="font-mono text-xs">{(row.size / 1024).toFixed(1)} KB</span> },
                             {
+                                header: 'Risk', accessor: 'risk_note', render: (row) => (
+                                    <span className={`px-2 py-0.5 rounded text-xs font-semibold ${row.written_to_disk ? 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200' : 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'}`} title={row.risk_note}>
+                                        {row.written_to_disk ? "Written to Disk (Untrusted)" : "Memory Only (Untrusted)"}
+                                    </span>
+                                )
+                            },
+                            {
                                 header: 'MD5', accessor: 'md5', render: (row) => (
                                     <div className="flex items-center gap-2">
                                         <span

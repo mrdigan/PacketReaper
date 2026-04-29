@@ -16,16 +16,21 @@ import (
 
 // FileDetail holds info about extracted files
 type FileDetail struct {
-	Filename   string `json:"filename"`
-	Size       int64  `json:"size"`
-	Path       string `json:"path"`
-	Extension  string `json:"extension"`
-	MD5        string `json:"md5"`
-	SHA256     string `json:"sha256"`
-	SourceIP   string `json:"source_ip"`
-	DestIP     string `json:"dest_ip"`
-	SourcePort int    `json:"source_port"`
-	DestPort   int    `json:"dest_port"`
+	Filename            string `json:"filename"`
+	Size                int64  `json:"size"`
+	Path                string `json:"path"`
+	Extension           string `json:"extension"`
+	MD5                 string `json:"md5"`
+	SHA256              string `json:"sha256"`
+	SourceIP            string `json:"source_ip"`
+	DestIP              string `json:"dest_ip"`
+	SourcePort          int    `json:"source_port"`
+	DestPort            int    `json:"dest_port"`
+	StreamID            string `json:"stream_id"`
+	IsExtractedArtifact bool   `json:"is_extracted_artifact"`
+	WrittenToDisk       bool   `json:"written_to_disk"`
+	RiskNote            string `json:"risk_note"`
+	PreviewBytes        []byte `json:"-"` // Internal use only, not sent to frontend
 }
 
 // StreamAssembler handles 5-tuple streams
@@ -372,13 +377,19 @@ func (sa *StreamAssembler) identifyAndWrite(stream *Stream) bool {
 		size := int64(len(fileData))
 
 		// If NOT SafeMode, write to disk
+		var writtenToDisk bool
+		var riskNote string
 		if !sa.SafeMode {
 			err := os.WriteFile(fullPath, fileData, 0644)
 			if err != nil {
 				return false // Failed to write
 			}
+			writtenToDisk = true
+			riskNote = "Written to Disk (Untrusted)"
 		} else {
 			fullPath = "[Only in Memory] " + safeFilename // Marker for UI
+			writtenToDisk = false
+			riskNote = "Memory Only (Untrusted)"
 		}
 
 		displaySource := stream.SrcIP
@@ -403,16 +414,21 @@ func (sa *StreamAssembler) identifyAndWrite(stream *Stream) bool {
 		}
 
 		sa.FilesWritten = append(sa.FilesWritten, FileDetail{
-			Filename:   filename, // Display name
-			Size:       size,
-			Path:       fullPath,
-			Extension:  filepath.Ext(filename),
-			MD5:        md5Str,
-			SHA256:     sha256Str,
-			SourceIP:   displaySource,
-			DestIP:     stream.DstIP,
-			SourcePort: sPort,
-			DestPort:   dPort,
+			Filename:            filename, // Display name
+			Size:                size,
+			Path:                fullPath,
+			Extension:           filepath.Ext(filename),
+			MD5:                 md5Str,
+			SHA256:              sha256Str,
+			SourceIP:            displaySource,
+			DestIP:              stream.DstIP,
+			SourcePort:          sPort,
+			DestPort:            dPort,
+			StreamID:            stream.ID,
+			IsExtractedArtifact: true,
+			WrittenToDisk:       writtenToDisk,
+			RiskNote:            riskNote,
+			PreviewBytes:        fileData,
 		})
 		return true
 	}

@@ -184,6 +184,7 @@ type ImageInfo struct {
 	Filename   string `json:"filename"`
 	Data       string `json:"data"` // Base64
 	SourceIP   string `json:"source_ip"`
+	DestIP     string `json:"dest_ip"`
 	SourcePort int    `json:"source_port"`
 	DestPort   int    `json:"dest_port"`
 }
@@ -473,14 +474,22 @@ func (a *App) ProcessPcapFile(filename string, keywordsList []string) PcapResult
 		file := fileInfo.Filename
 		ext := strings.ToLower(filepath.Ext(file))
 		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" {
-			fullPath := filepath.Join(outputDir, file)
-			data, err := ioutil.ReadFile(fullPath)
-			if err == nil {
+			var data []byte
+			if len(fileInfo.PreviewBytes) > 0 {
+				data = fileInfo.PreviewBytes
+			} else {
+				// Fallback to disk if not in memory (though it should be)
+				fullPath := filepath.Join(outputDir, file)
+				data, _ = os.ReadFile(fullPath)
+			}
+
+			if len(data) > 0 {
 				b64 := base64.StdEncoding.EncodeToString(data)
 				images = append(images, ImageInfo{
 					Filename:   file,
 					Data:       b64,
 					SourceIP:   fileInfo.SourceIP,
+					DestIP:     fileInfo.DestIP,
 					SourcePort: fileInfo.SourcePort,
 					DestPort:   fileInfo.DestPort,
 				})
