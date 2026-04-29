@@ -177,6 +177,10 @@ export namespace assembly {
 	    dest_ip: string;
 	    source_port: number;
 	    dest_port: number;
+	    stream_id: string;
+	    is_extracted_artifact: boolean;
+	    written_to_disk: boolean;
+	    risk_note: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new FileDetail(source);
@@ -194,6 +198,10 @@ export namespace assembly {
 	        this.dest_ip = source["dest_ip"];
 	        this.source_port = source["source_port"];
 	        this.dest_port = source["dest_port"];
+	        this.stream_id = source["stream_id"];
+	        this.is_extracted_artifact = source["is_extracted_artifact"];
+	        this.written_to_disk = source["written_to_disk"];
+	        this.risk_note = source["risk_note"];
 	    }
 	}
 
@@ -370,6 +378,7 @@ export namespace main {
 	    filename: string;
 	    data: string;
 	    source_ip: string;
+	    dest_ip: string;
 	    source_port: number;
 	    dest_port: number;
 	
@@ -382,6 +391,7 @@ export namespace main {
 	        this.filename = source["filename"];
 	        this.data = source["data"];
 	        this.source_ip = source["source_ip"];
+	        this.dest_ip = source["dest_ip"];
 	        this.source_port = source["source_port"];
 	        this.dest_port = source["dest_port"];
 	    }
